@@ -190,6 +190,99 @@ function typeInto(el, text, clear) {
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+// What a pointer moving onto an element fires: enter events reach every
+// ancestor the pointer newly enters, which is what opens hover menus.
+function hoverElement(el) {
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  const rect = el.getBoundingClientRect();
+  const init = {
+    bubbles: true, cancelable: true, composed: true, view: window,
+    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+  };
+  const chain = [];
+  for (let node = el; node && node.nodeType === 1; node = node.parentElement) chain.unshift(node);
+  for (const node of chain) {
+    node.dispatchEvent(new PointerEvent('pointerenter', { ...init, bubbles: false }));
+    node.dispatchEvent(new MouseEvent('mouseenter', { ...init, bubbles: false }));
+  }
+  el.dispatchEvent(new PointerEvent('pointerover', init));
+  el.dispatchEvent(new MouseEvent('mouseover', init));
+  el.dispatchEvent(new PointerEvent('pointermove', init));
+  el.dispatchEvent(new MouseEvent('mousemove', init));
+}
+
+// A drag and drop as a page's HTML5 handlers see it, with a shared
+// DataTransfer, plus the mouse events that libraries built on them use.
+function dragElement(source, destination) {
+  source.scrollIntoView({ block: 'center', inline: 'center' });
+  const from = source.getBoundingClientRect();
+  const to = destination.getBoundingClientRect();
+  const at = (rect) => ({ clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  const base = { bubbles: true, cancelable: true, composed: true, view: window };
+  let transfer;
+  try {
+    transfer = new window.wrappedJSObject.DataTransfer();
+  } catch (error) {
+    transfer = undefined;
+  }
+  const dragEvent = (type, rect) => {
+    const init = { ...base, ...at(rect) };
+    try {
+      return new DragEvent(type, transfer ? { ...init, dataTransfer: transfer } : init);
+    } catch (error) {
+      return new DragEvent(type, init);
+    }
+  };
+  source.dispatchEvent(new PointerEvent('pointerdown', { ...base, ...at(from), button: 0, buttons: 1 }));
+  source.dispatchEvent(new MouseEvent('mousedown', { ...base, ...at(from), button: 0, buttons: 1 }));
+  source.dispatchEvent(dragEvent('dragstart', from));
+  source.dispatchEvent(dragEvent('drag', from));
+  destination.dispatchEvent(new MouseEvent('mousemove', { ...base, ...at(to), buttons: 1 }));
+  destination.dispatchEvent(dragEvent('dragenter', to));
+  destination.dispatchEvent(dragEvent('dragover', to));
+  destination.dispatchEvent(dragEvent('drop', to));
+  source.dispatchEvent(dragEvent('dragend', to));
+  destination.dispatchEvent(new PointerEvent('pointerup', { ...base, ...at(to), button: 0 }));
+  destination.dispatchEvent(new MouseEvent('mouseup', { ...base, ...at(to), button: 0 }));
+}
+
+// Picks an option of a <select> by value, then by its visible text, and tells
+// the page through the events a person's choice would fire.
+function selectOption(el, wanted) {
+  if (el.tagName !== 'SELECT') {
+    throw new Error('Target must be a <select>');
+  }
+  const wantedList = Array.isArray(wanted) ? wanted : [wanted];
+  const options = Array.from(el.options);
+  const chosen = wantedList.map(item => {
+    const option = options.find(o => o.value === item) || options.find(o => oneLine(o.text, 200) === item)
+      || options.find(o => oneLine(o.text, 200).toLowerCase() === String(item).toLowerCase());
+    if (!option) {
+      throw new Error(`No option "${item}" in ${describe(el)}; options: `
+        + options.slice(0, 20).map(o => `"${oneLine(o.text, 40)}"`).join(', '));
+    }
+    return option;
+  });
+  if (chosen.length > 1 && !el.multiple) {
+    throw new Error('Several options given for a <select> that is not multiple');
+  }
+  for (const option of options) option.selected = chosen.includes(option);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// Sets one form field to a value, whatever kind of field it is.
+function fillField(el, value) {
+  if (el.tagName === 'SELECT') {
+    selectOption(el, value);
+  } else if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
+    const wanted = value === true || String(value).toLowerCase() === 'true';
+    if (el.checked !== wanted) clickElement(el);
+  } else {
+    typeInto(el, String(value), true);
+  }
+}
+
 function pressKey(el, key) {
   const init = { key, bubbles: true, cancelable: true, composed: true };
   const notCancelled = el.dispatchEvent(new KeyboardEvent('keydown', init));
@@ -423,6 +516,79 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ typed: describe(el) });
           })
           .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'hover': {
+        const el = findTarget(data);
+        showOverlay();
+        moveCursorTo(el, false)
+          .then(() => {
+            hoverElement(el);
+            sendResponse({ hovered: describe(el) });
+          })
+          .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'drag': {
+        const source = findTarget(data);
+        const destination = findTarget({ ref: data.toRef, selector: data.toSelector });
+        showOverlay();
+        moveCursorTo(source, true)
+          .then(() => moveCursorTo(destination, false))
+          .then(() => {
+            dragElement(source, destination);
+            sendResponse({ dragged: describe(source), to: describe(destination) });
+          })
+          .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'scroll': {
+        showOverlay();
+        if (data.ref || data.selector) {
+          const el = findTarget(data);
+          el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+          sendResponse({ scrolledTo: describe(el), x: Math.round(scrollX), y: Math.round(scrollY) });
+        } else {
+          const view = { innerHeight, innerWidth };
+          const amount = data.amount ?? 0.8;
+          const px = amount <= 3 ? amount * (data.direction === 'left' || data.direction === 'right'
+            ? view.innerWidth : view.innerHeight) : amount;
+          const [dx, dy] = { up: [0, -px], down: [0, px], left: [-px, 0], right: [px, 0],
+            top: [0, -1e9], bottom: [0, 1e9] }[data.direction] || [0, px];
+          window.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+          const max = document.documentElement.scrollHeight - innerHeight;
+          sendResponse({ x: Math.round(scrollX), y: Math.round(scrollY), maxY: Math.max(Math.round(max), 0) });
+        }
+        break;
+      }
+
+      case 'selectOption': {
+        const el = findTarget(data);
+        showOverlay();
+        moveCursorTo(el, false)
+          .then(() => {
+            selectOption(el, data.values);
+            sendResponse({ selected: describe(el) });
+          })
+          .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'fillForm': {
+        showOverlay();
+        (async () => {
+          const done = [];
+          for (const field of data.fields) {
+            const el = findTarget(field);
+            await moveCursorTo(el, true);
+            fillField(el, field.value);
+            done.push(describe(el));
+          }
+          sendResponse({ filled: done });
+        })().catch(error => sendResponse({ error: error.message }));
         break;
       }
 

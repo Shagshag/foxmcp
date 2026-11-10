@@ -887,6 +887,27 @@ afterwards. A stale ref is an error naming the ref.
 Each answers with the element it acted on, described as in a snapshot:
 `{"clicked": "[r3] button \"Next\""}`, `{"typed": ...}`, `{"pressed": "Escape"}`.
 
+#### Hover, Drag, Scroll, Select and Fill a Form
+These take the same `ref` or `selector` target as a click and answer with the
+element described as in a snapshot.
+
+```json
+{"action": "content.hover", "data": {"tabId": 123, "ref": "r4", "selector": null}}
+{"action": "content.drag", "data": {"tabId": 123, "ref": "r1", "selector": null, "toRef": "r2", "toSelector": null}}
+{"action": "content.scroll", "data": {"tabId": 123, "ref": null, "selector": null, "direction": "down", "amount": null}}
+{"action": "content.select_option", "data": {"tabId": 123, "ref": "r6", "selector": null, "values": ["France"]}}
+{"action": "content.fill_form", "data": {"tabId": 123, "fields": [{"ref": "r1", "selector": null, "value": "Dor"}]}}
+```
+
+`content.scroll` without a target scrolls the page: `direction` is `up`, `down`,
+`left`, `right`, `top` or `bottom`, and `amount` is in screens when 3 or less, else
+pixels (default 0.8 screens). It answers the new `x` and `y` and the largest `y`
+(`maxY`); with a target it scrolls the element into view and answers `scrolledTo`.
+`content.select_option` matches each value against the option values, then the
+visible text, and errors with the available options when none matches.
+`content.fill_form` types into inputs and textareas, picks the option of a select,
+and sets a checkbox or radio to `true` or `false`; it answers `{"filled": [...]}`.
+
 #### Wait
 `content.wait` polls the tab until it has finished loading and, when given, the
 `selector` matches, the `text` is in the page and the tab URL contains `url`.

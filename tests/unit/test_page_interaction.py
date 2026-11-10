@@ -195,6 +195,80 @@ class TestScreenshotRegion:
         assert stub_server.sent_request is None
 
 
+class TestMoreInteractions:
+
+    @pytest.mark.asyncio
+    async def test_hover(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {"hovered": '[r4] a "Menu"'}}
+
+        result = await call_tool("content_hover", profile_id=1, tab_id=4, ref="r4")
+
+        assert stub_server.sent_request["action"] == "content.hover"
+        assert stub_server.sent_request["data"] == {"tabId": 4, "ref": "r4", "selector": None}
+        assert result == 'Hovered [r4] a "Menu"'
+
+    @pytest.mark.asyncio
+    async def test_drag_needs_a_drop_target(self, call_tool, stub_server):
+        with pytest.raises(ValueError, match="to_ref"):
+            await call_tool("content_drag", profile_id=1, tab_id=4, ref="r1")
+        assert stub_server.sent_request is None
+
+    @pytest.mark.asyncio
+    async def test_drag(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {
+            "dragged": '[r1] div "Card"', "to": '[r2] div "Done"'}}
+
+        result = await call_tool("content_drag", profile_id=1, tab_id=4, ref="r1", to_ref="r2")
+
+        assert stub_server.sent_request["data"] == {
+            "tabId": 4, "ref": "r1", "selector": None, "toRef": "r2", "toSelector": None}
+        assert result == 'Dragged [r1] div "Card" onto [r2] div "Done"'
+
+    @pytest.mark.asyncio
+    async def test_scroll_the_page(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {"x": 0, "y": 640, "maxY": 2000}}
+
+        result = await call_tool("content_scroll", profile_id=1, tab_id=4)
+
+        assert stub_server.sent_request["data"]["direction"] == "down"
+        assert result == "Scrolled to x=0, y=640 (bottom is y=2000)"
+
+    @pytest.mark.asyncio
+    async def test_scroll_rejects_an_unknown_direction(self, call_tool, stub_server):
+        with pytest.raises(ValueError, match="direction"):
+            await call_tool("content_scroll", profile_id=1, tab_id=4, direction="sideways")
+
+    @pytest.mark.asyncio
+    async def test_select_option(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {"selected": '[r6] select "Country"'}}
+
+        result = await call_tool("content_select_option", profile_id=1, tab_id=4,
+                                 values=["France"], selector="#country")
+
+        assert stub_server.sent_request["data"] == {
+            "tabId": 4, "ref": None, "selector": "#country", "values": ["France"]}
+        assert result == 'Selected in [r6] select "Country"'
+
+    @pytest.mark.asyncio
+    async def test_fill_form_sends_every_field(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {
+            "filled": ['[r1] input "Name"', '[r2] input "Agree"']}}
+
+        result = await call_tool("content_fill_form", profile_id=1, tab_id=4, fields=[
+            {"ref": "r1", "value": "Dor"}, {"selector": "#agree", "value": True}])
+
+        assert stub_server.sent_request["data"]["fields"] == [
+            {"ref": "r1", "selector": None, "value": "Dor"},
+            {"ref": None, "selector": "#agree", "value": True}]
+        assert result == 'Filled:\n[r1] input "Name"\n[r2] input "Agree"'
+
+    @pytest.mark.asyncio
+    async def test_fill_form_rejects_a_field_without_value(self, call_tool, stub_server):
+        with pytest.raises(ValueError, match="value"):
+            await call_tool("content_fill_form", profile_id=1, tab_id=4, fields=[{"ref": "r1"}])
+        assert stub_server.sent_request is None
+
+
 class RecordingWebSocketServer:
     """Records every request; answers capture and finish the way the extension does"""
 

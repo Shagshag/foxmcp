@@ -2589,6 +2589,136 @@ class FoxMCPTools:
                 return f"Failed to type: {error}"
             return f"Typed into {data.get('typed')}"
 
+        # Hover Tool
+        @self._tool()
+        async def content_hover(
+            profile_id: int, tab_id: int, ref: Optional[str] = None, selector: Optional[str] = None
+        ) -> str:
+            """Move the pointer onto an element, as menus and tooltips that open on
+            hover need
+
+            Args:
+                tab_id: ID of the tab
+                ref: Element ref from content_snapshot
+                selector: CSS selector, used when no ref is given
+            """
+            data, error = await page_request(profile_id, {
+                "action": "content.hover", "data": target(tab_id, ref, selector)})
+            if error:
+                return f"Failed to hover: {error}"
+            return f"Hovered {data.get('hovered')}"
+
+        # Drag Tool
+        @self._tool()
+        async def content_drag(
+            profile_id: int,
+            tab_id: int,
+            ref: Optional[str] = None,
+            selector: Optional[str] = None,
+            to_ref: Optional[str] = None,
+            to_selector: Optional[str] = None
+        ) -> str:
+            """Drag one element onto another, firing the HTML5 drag and drop events
+            and the mouse events libraries built on them listen for
+
+            Args:
+                tab_id: ID of the tab
+                ref: Ref of the element to drag, from content_snapshot
+                selector: CSS selector of the element to drag, used when no ref is given
+                to_ref: Ref of the element to drop it on
+                to_selector: CSS selector of the drop target, used when no to_ref is given
+            """
+            if not to_ref and not to_selector:
+                raise ValueError("Pass either to_ref or to_selector for the drop target")
+            data, error = await page_request(profile_id, {
+                "action": "content.drag",
+                "data": {**target(tab_id, ref, selector), "toRef": to_ref, "toSelector": to_selector}})
+            if error:
+                return f"Failed to drag: {error}"
+            return f"Dragged {data.get('dragged')} onto {data.get('to')}"
+
+        # Scroll Tool
+        @self._tool()
+        async def content_scroll(
+            profile_id: int,
+            tab_id: int,
+            ref: Optional[str] = None,
+            selector: Optional[str] = None,
+            direction: str = "down",
+            amount: Optional[float] = None
+        ) -> str:
+            """Scroll to an element, or the page by a screenful (or to its top or bottom)
+
+            Args:
+                tab_id: ID of the tab
+                ref: Scroll this element into view (ref from content_snapshot)
+                selector: CSS selector to scroll into view, used when no ref is given
+                direction: up, down, left, right, top or bottom (default: down)
+                amount: Screens to scroll when 3 or less (default: 0.8), pixels when larger
+            """
+            if direction not in ("up", "down", "left", "right", "top", "bottom"):
+                raise ValueError("direction must be up, down, left, right, top or bottom")
+            data, error = await page_request(profile_id, {
+                "action": "content.scroll",
+                "data": {"tabId": tab_id, "ref": ref, "selector": selector,
+                         "direction": direction, "amount": amount}})
+            if error:
+                return f"Failed to scroll: {error}"
+            if data.get("scrolledTo"):
+                return f"Scrolled to {data['scrolledTo']} (page at y={data.get('y')})"
+            return f"Scrolled to x={data.get('x')}, y={data.get('y')} (bottom is y={data.get('maxY')})"
+
+        # Select Option Tool
+        @self._tool()
+        async def content_select_option(
+            profile_id: int,
+            tab_id: int,
+            values: List[str],
+            ref: Optional[str] = None,
+            selector: Optional[str] = None
+        ) -> str:
+            """Choose options in a <select> by value or visible text
+
+            Args:
+                tab_id: ID of the tab
+                values: Option values or texts to select (several only for a multiple select)
+                ref: Element ref from content_snapshot
+                selector: CSS selector, used when no ref is given
+            """
+            data, error = await page_request(profile_id, {
+                "action": "content.select_option",
+                "data": {**target(tab_id, ref, selector), "values": values}})
+            if error:
+                return f"Failed to select: {error}"
+            return f"Selected in {data.get('selected')}"
+
+        # Fill Form Tool
+        @self._tool()
+        async def content_fill_form(
+            profile_id: int, tab_id: int, fields: List[Dict[str, Any]]
+        ) -> str:
+            """Fill several form fields in one call: text inputs and textareas are typed
+            into, selects choose an option, checkboxes and radios are set
+
+            Args:
+                tab_id: ID of the tab
+                fields: List of {"ref" or "selector": ..., "value": ...}; a checkbox
+                    value is true or false, a select value an option value or text
+            """
+            if not fields:
+                raise ValueError("fields must not be empty")
+            for field in fields:
+                if not (field.get("ref") or field.get("selector")) or "value" not in field:
+                    raise ValueError('Each field needs "ref" or "selector", and "value"')
+            data, error = await page_request(profile_id, {
+                "action": "content.fill_form",
+                "data": {"tabId": tab_id, "fields": [
+                    {"ref": f.get("ref"), "selector": f.get("selector"), "value": f["value"]}
+                    for f in fields]}})
+            if error:
+                return f"Failed to fill the form: {error}"
+            return "Filled:\n" + "\n".join(data.get("filled", []))
+
         # Press Key Tool
         @self._tool()
         async def content_press_key(

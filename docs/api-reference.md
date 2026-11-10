@@ -177,6 +177,11 @@ for the complete input-assignment example and transfer details.
 - `content_wait(profile_id, tab_id, selector=None, text=None, url=None, gone=False, timeout=10)` - Wait until the tab has loaded and the selector, text or URL is present (or, with `gone`, absent); fails after `timeout` seconds (maximum 120)
 - `content_click(profile_id, tab_id, ref=None, selector=None, double_click=False)` - Click an element by ref or selector
 - `content_type(profile_id, tab_id, text, ref=None, selector=None, clear=True, submit=False)` - Type into an input or editable element
+- `content_hover(profile_id, tab_id, ref=None, selector=None)` - Move the pointer onto an element, as hover menus need
+- `content_drag(profile_id, tab_id, ref=None, selector=None, to_ref=None, to_selector=None)` - Drag one element onto another (HTML5 drag and drop events plus mouse events)
+- `content_scroll(profile_id, tab_id, ref=None, selector=None, direction="down", amount=None)` - Scroll an element into view, or the page by screens (3 or less) or pixels; `top` and `bottom` go to the ends
+- `content_select_option(profile_id, tab_id, values, ref=None, selector=None)` - Choose options of a `<select>` by value or visible text
+- `content_fill_form(profile_id, tab_id, fields)` - Fill several fields at once: `fields` is a list of `{"ref" or "selector", "value"}`; inputs are typed, selects choose an option, checkboxes take true or false
 - `content_press_key(profile_id, tab_id, key, ref=None, selector=None)` - Press a key on an element, or on the focused one
 - `content_upload_files(profile_id, tab_id, path, ref=None, selector=None, trigger_ref=None, trigger_selector=None)` - Put a local file or folder on a file input; a trigger fills the input a button would open
 

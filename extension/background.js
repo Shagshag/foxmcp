@@ -1574,9 +1574,16 @@ async function handleContentAction(id, action, data) {
       case 'content.click':
       case 'content.type':
       case 'content.press_key':
+      case 'content.hover':
+      case 'content.drag':
+      case 'content.scroll':
+      case 'content.select_option':
+      case 'content.fill_form':
       case 'content.capture_file_input': {
         const pageAction = { 'content.snapshot': 'snapshot', 'content.click': 'click',
           'content.type': 'type', 'content.press_key': 'pressKey',
+          'content.hover': 'hover', 'content.drag': 'drag', 'content.scroll': 'scroll',
+          'content.select_option': 'selectOption', 'content.fill_form': 'fillForm',
           'content.capture_file_input': 'captureFileInput' }[action];
         const pageResult = await sendMessageWithRetry(data.tabId, { action: pageAction, data });
         if (pageResult && pageResult.error) {
