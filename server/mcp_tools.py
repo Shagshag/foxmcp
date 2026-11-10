@@ -2557,7 +2557,13 @@ class FoxMCPTools:
             })
             if error:
                 return f"Failed to click: {error}"
-            return f"{'Double-clicked' if double_click else 'Clicked'} {data.get('clicked')}"
+            result = f"{'Double-clicked' if double_click else 'Clicked'} {data.get('clicked')}"
+            if data.get("reaction") == "no visible reaction":
+                result += (" - the page showed no reaction within 0.4 s; it may need more time "
+                           "(content_wait), or ignore scripted clicks, which are not trusted events")
+            elif data.get("reaction") == "page navigating":
+                result += " - the page is navigating (content_wait for it)"
+            return result
 
         # Type Tool
         @self._tool()

@@ -886,6 +886,9 @@ afterwards. A stale ref is an error naming the ref.
 
 Each answers with the element it acted on, described as in a snapshot:
 `{"clicked": "[r3] button \"Next\""}`, `{"typed": ...}`, `{"pressed": "Escape"}`.
+`content.click` also answers a `reaction`: `page changed`, `page navigating` (the page is
+being replaced) or `no visible reaction` after 400 ms. The events are scripted, so a few
+sites ignore them, and the last answer is how a client finds out.
 
 #### Hover, Drag, Scroll, Select and Fill a Form
 These take the same `ref` or `selector` target as a click and answer with the

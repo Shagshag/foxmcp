@@ -102,6 +102,25 @@ class TestClick:
         assert result == 'Clicked [r2] button "Save"'
 
     @pytest.mark.asyncio
+    async def test_warns_when_the_page_did_not_react(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {
+            "clicked": '[r2] button "Save"', "reaction": "no visible reaction"}}
+
+        result = await call_tool("content_click", profile_id=1, tab_id=4, ref="r2")
+
+        assert result.startswith('Clicked [r2] button "Save" - the page showed no reaction')
+        assert "not trusted" in result
+
+    @pytest.mark.asyncio
+    async def test_says_when_the_page_is_navigating(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {
+            "clicked": '[r2] a "Next"', "reaction": "page navigating"}}
+
+        result = await call_tool("content_click", profile_id=1, tab_id=4, ref="r2")
+
+        assert result == 'Clicked [r2] a "Next" - the page is navigating (content_wait for it)'
+
+    @pytest.mark.asyncio
     async def test_double_click(self, call_tool, stub_server):
         stub_server.response = {"type": "response", "data": {"clicked": '[r9] row "Characters"'}}
 

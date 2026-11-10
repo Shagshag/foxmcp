@@ -190,6 +190,32 @@ function typeInto(el, text, clear) {
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+// Events a script dispatches are not trusted, and a few sites ignore them. After
+// an action this watches the page for a moment and says whether anything
+// reacted, so a client can tell a click that worked from one that did nothing.
+// A navigation ends the wait at once: the page is about to be replaced.
+function watchReaction(action, windowMs = 400) {
+  return new Promise(resolve => {
+    let changed = false;
+    const observer = new MutationObserver(records => {
+      // The agent's own overlay moves while it works; it is not the page reacting.
+      if (records.some(r => !(r.target.id === OVERLAY_ID || r.target.getRootNode?.().host?.id === OVERLAY_ID))) {
+        changed = true;
+      }
+    });
+    observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    const finish = reaction => {
+      observer.disconnect();
+      window.removeEventListener('pagehide', onLeave);
+      resolve(reaction);
+    };
+    const onLeave = () => finish('page navigating');
+    window.addEventListener('pagehide', onLeave);
+    action();
+    setTimeout(() => finish(changed ? 'page changed' : 'no visible reaction'), windowMs);
+  });
+}
+
 // What a pointer moving onto an element fires: enter events reach every
 // ancestor the pointer newly enters, which is what opens hover menus.
 function hoverElement(el) {
@@ -574,10 +600,8 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const el = findTarget(data);
         showOverlay();
         moveCursorTo(el, true)
-          .then(() => {
-            clickElement(el, data.doubleClick ? 2 : 1);
-            sendResponse({ clicked: describe(el) });
-          })
+          .then(() => watchReaction(() => clickElement(el, data.doubleClick ? 2 : 1)))
+          .then(reaction => sendResponse({ clicked: describe(el), reaction }))
           .catch(error => sendResponse({ error: error.message }));
         break;
       }
