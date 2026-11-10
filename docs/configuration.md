@@ -46,7 +46,7 @@ Options:
 By default the server offers MCP over HTTP, which means starting it yourself and
 leaving it running. `--stdio` offers the same tools on stdin and stdout instead,
 so an MCP client can launch the server itself and shut it down again when it
-exits — the way most clients expect to manage a server.
+exits â€” the way most clients expect to manage a server.
 
 **Claude Code**, from the directory you want it scoped to:
 
@@ -304,7 +304,7 @@ never fall back to another connected profile.
 
 Every tool's description sits in an MCP client's context for the whole session,
 whether or not the tool is ever called. With no predefined scripts listed, the
-full set of 46 tools costs roughly 10,338 tokens. `--disable-tools` leaves a group unregistered, so a client never
+full set of 51 tools costs roughly 10,700 tokens. `--disable-tools` leaves a group unregistered, so a client never
 sees it:
 
 ```bash
@@ -325,7 +325,7 @@ token, so treat them as proportions rather than exact counts:
 | `windows` | list, get, get_current, create, close, focus, update | 1,413 |
 | `requests` | start_monitoring, stop_monitoring, list_captured, get_content | 1,296 |
 | `navigation` | back, forward, reload, go_to_url | 668 |
-| `content` | get_text, get_html, execute_script, execute_predefined, load_file | 1,203 plus listed scripts |
+| `content` | get_text, get_html, execute_script, execute_predefined, load_file, snapshot, click, type, press_key, upload_files | 1,540 plus listed scripts |
 | `history` | query, get_recent, delete_item | 506 |
 | `debug` | websocket_status | 113 |
 
@@ -341,12 +341,12 @@ a warning, so a typo cannot silently leave the group enabled.
 
 Disabling a group hides its tools; it does not restrict the extension, which
 still holds the same browser permissions. This is a context-size option, not a
-security boundary — see [architecture.md](architecture.md#security-architecture).
+security boundary â€” see [architecture.md](architecture.md#security-architecture).
 
 ### Keeping one tool out of a disabled group
 
 Sometimes a single tool is the reason to keep a group, and the rest of it is
-dead weight — a screenshot of the page, without the nine tab tools that manage
+dead weight â€” a screenshot of the page, without the nine tab tools that manage
 tabs. `--enable-tools` names tools to register even though their group is
 disabled:
 
@@ -427,9 +427,9 @@ effective endpoint, including any test overrides.
 
 ### 1. Access Options
 
-- **Options Page**: Right-click extension → "Manage Extension" → "Preferences"
+- **Options Page**: Right-click extension â†’ "Manage Extension" â†’ "Preferences"
 - **Popup Interface**: Click extension icon for quick configuration
-- Or go to `about:addons` → FoxMCP → "Preferences"
+- Or go to `about:addons` â†’ FoxMCP â†’ "Preferences"
 
 ### 2. Configure Connection
 
@@ -515,7 +515,7 @@ server = FoxMCPServer(port=8765, start_mcp=False)  # Browser listener only when 
    [multiple-profile setup](#connecting-multiple-firefox-profiles-to-one-server))
 3. **Connect MCP client** to `http://localhost:3000/mcp/`
 
-Or let the client start the server for you — see
+Or let the client start the server for you â€” see
 [Serving MCP over stdio](#serving-mcp-over-stdio), where step 1 is the client's
 job and step 3 does not apply.
 
@@ -531,7 +531,7 @@ Connect directly to `http://localhost:3000/mcp/`
 
 **Complete Workflow**:
 ```
-MCP Client → FastMCP Server → WebSocket → Firefox Extension → Browser API
+MCP Client â†’ FastMCP Server â†’ WebSocket â†’ Firefox Extension â†’ Browser API
 ```
 
 ## Environment Variables
@@ -556,10 +556,10 @@ export FOXMCP_EXT_SCRIPTS=/path/to/predefined/
 ```
 
 `FOXMCP_DISABLE_TOOLS` names tool groups to leave unregistered, and
-`FOXMCP_ENABLE_TOOLS` names individual tools to register anyway — see
+`FOXMCP_ENABLE_TOOLS` names individual tools to register anyway â€” see
 [Reducing the Tool Surface](#reducing-the-tool-surface).
 
-Ports are set on the command line, not through the environment — see
+Ports are set on the command line, not through the environment â€” see
 [Multiple Server Instances](#multiple-server-instances).
 
 ## Multiple Server Instances
@@ -696,7 +696,7 @@ client: see [The reconnect gap](#the-reconnect-gap).
 
 ### Debug Logging
 
-The server logs at `INFO`. There is no verbosity flag — the level is set in
+The server logs at `INFO`. There is no verbosity flag â€” the level is set in
 `server/server.py`.
 
 For extension-side detail, set `ENABLE_DEBUG_LOGGING_TO_SERVER = true` near the top of
