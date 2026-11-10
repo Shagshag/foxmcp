@@ -937,6 +937,31 @@ function isBrowserId(value) {
   return Number.isInteger(value) && value >= 0;
 }
 
+// A screenshot request that names an element (ref or selector) is cropped to
+// it, with a margin of `padding` pixels: the element is scrolled into view and
+// its rectangle becomes the request's rect.
+async function cropToElement(tabId, data) {
+  if (!data.ref && !data.selector) {
+    return data;
+  }
+  const found = await sendMessageWithRetry(tabId, {
+    action: 'elementRect', data: { ref: data.ref, selector: data.selector }
+  });
+  if (!found || found.error) {
+    throw new Error(found?.error || 'Content script unavailable');
+  }
+  const pad = Number.isFinite(data.padding) ? Math.max(data.padding, 0) : 8;
+  const { x, y, width, height } = found.rect;
+  if (width <= 0 || height <= 0) {
+    throw new Error(`${found.described} has no visible area to capture`);
+  }
+  // Let the scroll settle before the page is captured.
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const left = Math.max(x - pad, 0);
+  const top = Math.max(y - pad, 0);
+  return { ...data, rect: { x: left, y: top, width: width + (x - left) + pad, height: height + (y - top) + pad } };
+}
+
 // Optional crop (rect, in CSS pixels of the page) and scale for a screenshot,
 // so a request can ask for a small part of the page instead of all of it.
 function captureRegionOptions(data) {
@@ -1289,6 +1314,9 @@ async function handleTabsAction(id, action, data) {
           : Promise.resolve();
 
         try {
+          if ((data.ref || data.selector) && shownTab) {
+            Object.assign(options, captureRegionOptions(await cropToElement(shownTab.id, data)));
+          }
           await setOverlay(false);
           const dataUrl = await browser.tabs.captureVisibleTab(windowId, options)
             .finally(() => setOverlay(true));
@@ -1322,6 +1350,7 @@ async function handleTabsAction(id, action, data) {
           captureTabId, { action: 'overlayVisibility', data: { visible } }).catch(() => {});
 
         try {
+          Object.assign(captureOptions, captureRegionOptions(await cropToElement(captureTabId, data)));
           await setTabOverlay(false);
           const dataUrl = await browser.tabs.captureTab(captureTabId, captureOptions)
             .finally(() => setTabOverlay(true));

@@ -1482,13 +1482,16 @@ class FoxMCPTools:
             y: Optional[float] = None,
             width: Optional[float] = None,
             height: Optional[float] = None,
-            scale: Optional[float] = None
+            scale: Optional[float] = None,
+            ref: Optional[str] = None,
+            selector: Optional[str] = None,
+            padding: Optional[float] = None
         ) -> str:
             """Capture a screenshot of the visible tab, or of the tab given by tab_id
 
             To save tokens, capture only a region (x, y, width, height, in CSS pixels from
-            the top-left of the visible page; all four together) and/or shrink it with scale
-            (e.g. 0.5).
+            the top-left of the visible page; all four together), or just one element (ref
+            from content_snapshot, or a CSS selector), and/or shrink it with scale (e.g. 0.5).
 
             What comes back depends on whether you pass a filename: with one, the image is
             written to disk and you get a success message and the path; without one, you get
@@ -1502,6 +1505,9 @@ class FoxMCPTools:
                 tab_id: Capture this tab, even in the background (not with window_id)
                 x, y, width, height: Region to capture, in CSS pixels (all four or none)
                 scale: Scale factor for the image (default: 1; e.g. 0.5 for half size)
+                ref: Capture only this element (ref from content_snapshot); it is scrolled into view
+                selector: Capture only the element this CSS selector matches (when no ref is given)
+                padding: Margin around the element in pixels (default: 8)
 
             Returns:
                 Success message with file path if filename provided, otherwise base64 encoded image data URL
@@ -1512,6 +1518,13 @@ class FoxMCPTools:
                 return "Error capturing screenshot: pass tab_id or window_id, not both"
 
             region = {}
+            if ref or selector:
+                if any(v is not None for v in (x, y, width, height)):
+                    return "Error capturing screenshot: pass an element or a region, not both"
+                region["ref"] = ref
+                region["selector"] = selector
+                if padding is not None:
+                    region["padding"] = padding
             if any(v is not None for v in (x, y, width, height)):
                 if None in (x, y, width, height):
                     return "Error capturing screenshot: pass x, y, width and height together"

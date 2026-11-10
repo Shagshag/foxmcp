@@ -168,6 +168,25 @@ class TestScreenshotRegion:
         assert data["scale"] == 0.5
 
     @pytest.mark.asyncio
+    async def test_element_capture_sends_the_ref(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {
+            "dataUrl": "data:image/png;base64,AAAA", "format": "png", "quality": 90, "tabId": 4}}
+
+        await call_tool("tabs_capture_screenshot", profile_id=1, tab_id=4, ref="r3", padding=2)
+
+        data = stub_server.sent_request["data"]
+        assert (data["ref"], data["selector"], data["padding"]) == ("r3", None, 2)
+        assert "rect" not in data
+
+    @pytest.mark.asyncio
+    async def test_element_and_region_together_send_nothing(self, call_tool, stub_server):
+        result = await call_tool("tabs_capture_screenshot", profile_id=1, ref="r3",
+                                 x=0, y=0, width=10, height=10)
+
+        assert "not both" in result
+        assert stub_server.sent_request is None
+
+    @pytest.mark.asyncio
     async def test_incomplete_region_sends_nothing(self, call_tool, stub_server):
         result = await call_tool("tabs_capture_screenshot", profile_id=1, x=10, y=20)
 

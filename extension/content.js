@@ -373,6 +373,16 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       }
 
+      // Where an element is in the viewport, so a screenshot can be cropped to it.
+      case 'elementRect': {
+        const el = findTarget(data);
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = el.getBoundingClientRect();
+        sendResponse({ rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+                       described: describe(el) });
+        break;
+      }
+
       // One look at whether what content_wait waits for is on the page now.
       case 'checkWait': {
         let found = true;
