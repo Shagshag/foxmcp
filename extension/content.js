@@ -527,7 +527,10 @@ function armConsole() {
     const original = page.console[level];
     page.console[level] = exportFunction(function (...args) {
       addConsoleEntry(level, args.map(formatConsoleArg).join(' '));
-      return original.apply(this, args);
+      // Spread, not apply(this, args): the array belongs to this script's side, and
+      // the page's console cannot read it ("Permission denied to access property
+      // length"), which would make every logged call throw in the page.
+      return original.call(this, ...args);
     }, window);
   }
   window.addEventListener('error', event => addConsoleEntry('uncaught',
