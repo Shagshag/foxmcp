@@ -471,6 +471,45 @@ function setDialogHandling(mode, promptText) {
   }, window);
 }
 
+// The page's console output and uncaught errors, kept from the moment a client
+// first asks. Wrapping console on every page from the start would change stack
+// locations and cost time for pages nobody is debugging, so it waits to be asked.
+const CONSOLE_LIMIT = 500;
+const consoleState = { armed: false, entries: [] };
+
+function formatConsoleArg(value) {
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value !== 'object') return String(value);
+  try {
+    if (value instanceof window.wrappedJSObject.Error) return value.stack || String(value);
+    return JSON.stringify(value);
+  } catch (error) {
+    return Object.prototype.toString.call(value);
+  }
+}
+
+function addConsoleEntry(level, message) {
+  consoleState.entries.push({ level, message: message.slice(0, 2000), time: new Date().toISOString() });
+  if (consoleState.entries.length > CONSOLE_LIMIT) consoleState.entries.shift();
+}
+
+function armConsole() {
+  if (consoleState.armed) return;
+  consoleState.armed = true;
+  const page = window.wrappedJSObject;
+  for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+    const original = page.console[level];
+    page.console[level] = exportFunction(function (...args) {
+      addConsoleEntry(level, args.map(formatConsoleArg).join(' '));
+      return original.apply(this, args);
+    }, window);
+  }
+  window.addEventListener('error', event => addConsoleEntry('uncaught',
+    `${event.message} (${event.filename}:${event.lineno}:${event.colno})`));
+  window.addEventListener('unhandledrejection', event => addConsoleEntry('uncaught',
+    'Unhandled promise rejection: ' + formatConsoleArg(event.reason)));
+}
+
 // Listen for messages from background script
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const { action, script, data } = request;
@@ -553,6 +592,18 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ typed: describe(el) });
           })
           .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'console': {
+        const wasArmed = consoleState.armed;
+        armConsole();
+        let entries = consoleState.entries.filter(entry =>
+          (!data.level || entry.level === data.level || (data.level === 'error' && entry.level === 'uncaught'))
+          && (!data.pattern || entry.message.includes(data.pattern)));
+        entries = entries.slice(-(data.limit || 50));
+        if (data.clear) consoleState.entries.length = 0;
+        sendResponse({ started: !wasArmed, entries });
         break;
       }
 

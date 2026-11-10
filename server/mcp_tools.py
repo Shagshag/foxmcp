@@ -2589,6 +2589,43 @@ class FoxMCPTools:
                 return f"Failed to type: {error}"
             return f"Typed into {data.get('typed')}"
 
+        # Console Tool
+        @self._tool()
+        async def content_read_console(
+            profile_id: int,
+            tab_id: int,
+            level: Optional[str] = None,
+            pattern: Optional[str] = None,
+            limit: int = 50,
+            clear: bool = False
+        ) -> str:
+            """Read what the page logged to its console and its uncaught JavaScript errors
+
+            Recording starts with the first call on a page, so call it once before the
+            action to debug; it restarts when the tab navigates.
+
+            Args:
+                tab_id: ID of the tab
+                level: Only log, info, warn, error (which includes uncaught errors) or debug
+                pattern: Only messages containing this text
+                limit: Newest entries to return (default: 50)
+                clear: Forget the entries after reading them (default: False)
+            """
+            if level not in (None, "log", "info", "warn", "error", "debug"):
+                raise ValueError("level must be log, info, warn, error or debug")
+            data, error = await page_request(profile_id, {
+                "action": "content.console",
+                "data": {"tabId": tab_id, "level": level, "pattern": pattern,
+                         "limit": limit, "clear": clear}})
+            if error:
+                return f"Failed to read the console: {error}"
+            if data.get("started"):
+                return "Console recording started; call again after the page has logged something"
+            entries = data.get("entries", [])
+            if not entries:
+                return "No console entries"
+            return "\n".join(f"[{e['level']}] {e['message']}" for e in entries)
+
         # Dialog Handling Tool
         @self._tool()
         async def content_handle_dialogs(

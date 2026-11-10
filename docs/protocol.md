@@ -908,6 +908,18 @@ visible text, and errors with the available options when none matches.
 `content.fill_form` types into inputs and textareas, picks the option of a select,
 and sets a checkbox or radio to `true` or `false`; it answers `{"filled": [...]}`.
 
+#### Console
+`content.console` returns what the page has logged since the first request, and
+uncaught errors and unhandled promise rejections (level `uncaught`, also returned for
+`level: "error"`). The first request on a page only starts recording, answering
+`{"started": true, "entries": []}`, because wrapping `console` everywhere from the
+start would change stack locations on pages nobody is debugging. At most 500 entries
+are kept.
+
+```json
+{"action": "content.console", "data": {"tabId": 123, "level": null, "pattern": null, "limit": 50, "clear": false}}
+```
+
 #### Dialogs and Downloads
 A native `alert`, `confirm` or `prompt` blocks a page and cannot be answered from an
 extension, so `content.dialogs` replaces the page's own functions. `mode` is `accept`,
