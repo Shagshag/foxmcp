@@ -269,6 +269,49 @@ class TestMoreInteractions:
         assert stub_server.sent_request is None
 
 
+class TestRequestFilters:
+
+    CAPTURED = {"type": "response", "data": {"monitor_id": "m", "total_requests": 4, "requests": [
+        {"url": "https://example.org/a.js", "method": "GET", "status_code": 200, "type": "script"},
+        {"url": "https://example.org/api/save", "method": "POST", "status_code": 500, "type": "xmlhttprequest"},
+        {"url": "https://example.org/api/list", "method": "GET", "status_code": 200, "type": "xmlhttprequest"},
+        {"url": "https://example.org/b.png", "method": "GET", "status_code": 0, "type": "image",
+         "error": "NS_ERROR"}]}}
+
+    async def listed(self, call_tool, stub_server, **filters):
+        stub_server.response = self.CAPTURED
+        import json
+        return json.loads(await call_tool(
+            "requests_list_captured", profile_id=1, monitor_id="m", **filters))
+
+    @pytest.mark.asyncio
+    async def test_without_filters_nothing_is_dropped(self, call_tool, stub_server):
+        data = await self.listed(call_tool, stub_server)
+
+        assert len(data["requests"]) == 4
+        assert "matched_requests" not in data
+
+    @pytest.mark.asyncio
+    async def test_filters_combine(self, call_tool, stub_server):
+        data = await self.listed(call_tool, stub_server, url_contains="/api/", method="get")
+
+        assert [r["url"] for r in data["requests"]] == ["https://example.org/api/list"]
+        assert data["matched_requests"] == 1
+        assert data["total_requests"] == 4
+
+    @pytest.mark.asyncio
+    async def test_failed_only_includes_errors_and_bad_statuses(self, call_tool, stub_server):
+        data = await self.listed(call_tool, stub_server, failed_only=True)
+
+        assert [r["type"] for r in data["requests"]] == ["xmlhttprequest", "image"]
+
+    @pytest.mark.asyncio
+    async def test_limit_keeps_the_newest(self, call_tool, stub_server):
+        data = await self.listed(call_tool, stub_server, limit=1)
+
+        assert [r["type"] for r in data["requests"]] == ["image"]
+
+
 class TestConsole:
 
     @pytest.mark.asyncio
