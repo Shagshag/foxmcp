@@ -1317,8 +1317,14 @@ async function handleTabsAction(id, action, data) {
           ...captureRegionOptions(data)
         };
 
+        // As for captureVisibleTab, keep the agent overlay out of the image.
+        const setTabOverlay = (visible) => browser.tabs.sendMessage(
+          captureTabId, { action: 'overlayVisibility', data: { visible } }).catch(() => {});
+
         try {
-          const dataUrl = await browser.tabs.captureTab(captureTabId, captureOptions);
+          await setTabOverlay(false);
+          const dataUrl = await browser.tabs.captureTab(captureTabId, captureOptions)
+            .finally(() => setTabOverlay(true));
           sendResponse(id, action, {
             dataUrl: dataUrl,
             format: captureOptions.format,
