@@ -127,6 +127,28 @@ class TestPressKey:
         assert result == "Pressed Escape"
 
 
+class TestScreenshotRegion:
+
+    @pytest.mark.asyncio
+    async def test_sends_rect_and_scale(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {
+            "dataUrl": "data:image/png;base64,AAAA", "format": "png", "quality": 90, "tabId": 4}}
+
+        await call_tool("tabs_capture_screenshot", profile_id=1, tab_id=4,
+                        x=10, y=20, width=300, height=100, scale=0.5)
+
+        data = stub_server.sent_request["data"]
+        assert data["rect"] == {"x": 10, "y": 20, "width": 300, "height": 100}
+        assert data["scale"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_incomplete_region_sends_nothing(self, call_tool, stub_server):
+        result = await call_tool("tabs_capture_screenshot", profile_id=1, x=10, y=20)
+
+        assert "together" in result
+        assert stub_server.sent_request is None
+
+
 class RecordingWebSocketServer:
     """Records every request; answers capture and finish the way the extension does"""
 
