@@ -269,6 +269,48 @@ class TestMoreInteractions:
         assert stub_server.sent_request is None
 
 
+class TestDialogsAndDownloads:
+
+    @pytest.mark.asyncio
+    async def test_dialog_handling_lists_what_was_answered(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {"mode": "accept", "dialogs": [
+            {"type": "confirm", "message": "Delete?", "accepted": True}]}}
+
+        result = await call_tool("content_handle_dialogs", profile_id=1, tab_id=4, mode="accept")
+
+        assert stub_server.sent_request["data"] == {
+            "tabId": 4, "mode": "accept", "promptText": None}
+        assert result == "Dialog handling: accept\n- confirm (accepted): Delete?"
+
+    @pytest.mark.asyncio
+    async def test_dialog_mode_is_checked(self, call_tool, stub_server):
+        with pytest.raises(ValueError, match="mode"):
+            await call_tool("content_handle_dialogs", profile_id=1, tab_id=4, mode="maybe")
+
+    @pytest.mark.asyncio
+    async def test_list_downloads(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {"downloads": [{
+            "id": 7, "filename": "C:\\Users\\x\\Downloads\\export.csv", "state": "complete",
+            "bytes": 120, "url": "https://example.org/export.csv", "error": None}]}}
+
+        result = await call_tool("content_list_downloads", profile_id=1, limit=3)
+
+        assert stub_server.sent_request["action"] == "content.list_downloads"
+        assert stub_server.sent_request["data"] == {"limit": 3}
+        assert result == ("- [7] C:\\Users\\x\\Downloads\\export.csv (complete, 120 bytes) "
+                          "from https://example.org/export.csv")
+
+    @pytest.mark.asyncio
+    async def test_wait_for_a_download_that_never_comes(self, call_tool, stub_server):
+        stub_server.response = {"type": "error", "data": {
+            "message": "No download finished within 1000 ms"}}
+
+        result = await call_tool("content_wait_download", profile_id=1, timeout=1)
+
+        assert stub_server.sent_request["data"] == {"timeoutMs": 1000}
+        assert result == "Failed to wait for a download: No download finished within 1000 ms"
+
+
 class RecordingWebSocketServer:
     """Records every request; answers capture and finish the way the extension does"""
 

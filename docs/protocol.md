@@ -908,6 +908,24 @@ visible text, and errors with the available options when none matches.
 `content.fill_form` types into inputs and textareas, picks the option of a select,
 and sets a checkbox or radio to `true` or `false`; it answers `{"filled": [...]}`.
 
+#### Dialogs and Downloads
+A native `alert`, `confirm` or `prompt` blocks a page and cannot be answered from an
+extension, so `content.dialogs` replaces the page's own functions. `mode` is `accept`,
+`dismiss` or `off` (restore); any other value only reads the log. The answer lists the
+dialogs shown since the last call and is discarded when the page navigates.
+
+```json
+{"action": "content.dialogs", "data": {"tabId": 123, "mode": "accept", "promptText": null}}
+{"action": "content.list_downloads", "data": {"limit": 10}}
+{"action": "content.wait_download", "data": {"timeoutMs": 30000}}
+```
+
+`content.dialogs` answers `{"mode": "accept", "dialogs": [{"type": "confirm", "message": "...", "accepted": true}]}`.
+The two download requests use the `downloads` permission and answer `{"downloads": [...]}`
+and `{"download": {...}}` where each item has `id`, `filename` (the saved path), `url`, `state`,
+`bytes`, `mime`, `startTime` and `error`. `content.wait_download` answers a download that
+started up to 3 seconds before the request and has ended, or `WAIT_TIMEOUT`.
+
 #### Wait
 `content.wait` polls the tab until it has finished loading and, when given, the
 `selector` matches, the `text` is in the page and the tab URL contains `url`.

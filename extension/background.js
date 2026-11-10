@@ -1496,6 +1496,14 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 5, delayMs = 20
   }
 }
 
+function describeDownload(item) {
+  return {
+    id: item.id, filename: item.filename, url: item.url, state: item.state,
+    bytes: item.fileSize >= 0 ? item.fileSize : item.bytesReceived, mime: item.mime,
+    startTime: item.startTime, error: item.error || null
+  };
+}
+
 // Uploads in progress, by upload ID: one entry per file with its received chunks
 const pendingUploads = new Map();
 
@@ -1574,6 +1582,7 @@ async function handleContentAction(id, action, data) {
       case 'content.click':
       case 'content.type':
       case 'content.press_key':
+      case 'content.dialogs':
       case 'content.hover':
       case 'content.drag':
       case 'content.scroll':
@@ -1582,6 +1591,7 @@ async function handleContentAction(id, action, data) {
       case 'content.capture_file_input': {
         const pageAction = { 'content.snapshot': 'snapshot', 'content.click': 'click',
           'content.type': 'type', 'content.press_key': 'pressKey',
+          'content.dialogs': 'dialogs',
           'content.hover': 'hover', 'content.drag': 'drag', 'content.scroll': 'scroll',
           'content.select_option': 'selectOption', 'content.fill_form': 'fillForm',
           'content.capture_file_input': 'captureFileInput' }[action];
@@ -1590,6 +1600,37 @@ async function handleContentAction(id, action, data) {
           sendError(id, 'PAGE_ERROR', pageResult.error);
         } else {
           sendResponse(id, action, pageResult);
+        }
+        break;
+      }
+
+      // Files the browser has downloaded, newest first
+      case 'content.list_downloads': {
+        const items = await browser.downloads.search({
+          orderBy: ['-startTime'], limit: Math.min(Math.max(Number(data.limit) || 10, 1), 100)
+        });
+        sendResponse(id, action, { downloads: items.map(describeDownload) });
+        break;
+      }
+
+      // Waits for a download that starts now (or just started) to end
+      case 'content.wait_download': {
+        const timeoutMs = Math.min(Math.max(Number(data.timeoutMs) || 30000, 100), 300000);
+        const since = Date.now() - 3000;
+        const deadline = Date.now() + timeoutMs;
+        let found = null;
+        while (Date.now() < deadline) {
+          const [latest] = await browser.downloads.search({ orderBy: ['-startTime'], limit: 1 });
+          if (latest && Date.parse(latest.startTime) >= since && latest.state !== 'in_progress') {
+            found = latest;
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        if (found) {
+          sendResponse(id, action, { download: describeDownload(found) });
+        } else {
+          sendError(id, 'WAIT_TIMEOUT', `No download finished within ${timeoutMs} ms`);
         }
         break;
       }

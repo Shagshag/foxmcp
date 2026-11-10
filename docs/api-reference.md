@@ -177,6 +177,9 @@ for the complete input-assignment example and transfer details.
 - `content_wait(profile_id, tab_id, selector=None, text=None, url=None, gone=False, timeout=10)` - Wait until the tab has loaded and the selector, text or URL is present (or, with `gone`, absent); fails after `timeout` seconds (maximum 120)
 - `content_click(profile_id, tab_id, ref=None, selector=None, double_click=False)` - Click an element by ref or selector
 - `content_type(profile_id, tab_id, text, ref=None, selector=None, clear=True, submit=False)` - Type into an input or editable element
+- `content_handle_dialogs(profile_id, tab_id, mode="log", prompt_text=None)` - Answer the page's `alert`, `confirm` and `prompt` (`accept`, `dismiss`, `off`, or `log` to list what was shown); lasts until the tab navigates
+- `content_list_downloads(profile_id, limit=10)` - List recent downloads with the saved path, state and size (needs the `downloads` permission)
+- `content_wait_download(profile_id, timeout=30)` - Wait for a download to finish, e.g. after an export button, and return where it was saved
 - `content_hover(profile_id, tab_id, ref=None, selector=None)` - Move the pointer onto an element, as hover menus need
 - `content_drag(profile_id, tab_id, ref=None, selector=None, to_ref=None, to_selector=None)` - Drag one element onto another (HTML5 drag and drop events plus mouse events)
 - `content_scroll(profile_id, tab_id, ref=None, selector=None, direction="down", amount=None)` - Scroll an element into view, or the page by screens (3 or less) or pixels; `top` and `bottom` go to the ends

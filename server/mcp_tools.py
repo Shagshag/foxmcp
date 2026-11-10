@@ -2589,6 +2589,85 @@ class FoxMCPTools:
                 return f"Failed to type: {error}"
             return f"Typed into {data.get('typed')}"
 
+        # Dialog Handling Tool
+        @self._tool()
+        async def content_handle_dialogs(
+            profile_id: int,
+            tab_id: int,
+            mode: str = "log",
+            prompt_text: Optional[str] = None
+        ) -> str:
+            """Answer the page's alert, confirm and prompt dialogs, which otherwise block it
+            and cannot be closed from outside. Turn this on before the action that opens one.
+
+            The page's own functions are replaced, so it lasts until the tab navigates
+            and needs turning on again after that.
+
+            Args:
+                tab_id: ID of the tab
+                mode: accept (OK, and prompts get prompt_text), dismiss (Cancel), off
+                    (restore the native dialogs) or log (just list what was shown)
+                prompt_text: Text a prompt answers with in accept mode (default: its default)
+            """
+            if mode not in ("accept", "dismiss", "off", "log"):
+                raise ValueError("mode must be accept, dismiss, off or log")
+            data, error = await page_request(profile_id, {
+                "action": "content.dialogs",
+                "data": {"tabId": tab_id, "mode": mode, "promptText": prompt_text}})
+            if error:
+                return f"Failed to handle dialogs: {error}"
+            shown = data.get("dialogs", [])
+            lines = [f"Dialog handling: {data.get('mode')}"]
+            for dialog in shown:
+                answer = "accepted" if dialog.get("accepted") else "dismissed"
+                lines.append(f"- {dialog.get('type')} ({answer}): {dialog.get('message')}")
+            if not shown:
+                lines.append("No dialog was shown since the last call")
+            return "\n".join(lines)
+
+        # Downloads Tools
+        def downloads_text(items):
+            if not items:
+                return "No downloads"
+            return "\n".join(
+                f"- [{item.get('id')}] {item.get('filename')} ({item.get('state')}, "
+                f"{item.get('bytes')} bytes) from {item.get('url')}"
+                + (f" - error: {item['error']}" if item.get("error") else "")
+                for item in items)
+
+        @self._tool()
+        async def content_list_downloads(profile_id: int, limit: int = 10) -> str:
+            """List the most recent downloads with the path each file was saved to
+
+            Args:
+                limit: How many downloads to list, newest first (default: 10, maximum: 100)
+            """
+            data, error = await page_request(profile_id, {
+                "action": "content.list_downloads", "data": {"limit": limit}})
+            if error:
+                return f"Failed to list downloads: {error}"
+            return downloads_text(data.get("downloads", []))
+
+        @self._tool()
+        async def content_wait_download(profile_id: int, timeout: float = 30.0) -> str:
+            """Wait for a download to finish, for instance after clicking an export button,
+            and return where the file was saved
+
+            Args:
+                timeout: Seconds to wait at most (default: 30, maximum: 300)
+            """
+            response = await self._send(profile_id, {
+                "id": str(uuid.uuid4()), "type": "request",
+                "action": "content.wait_download",
+                "data": {"timeoutMs": int(timeout * 1000)},
+                "timestamp": datetime.now().isoformat()
+            }, timeout=min(max(timeout, 0.1), 300.0) + 15.0)
+            if "error" in response:
+                return f"Failed to wait for a download: {response['error']}"
+            if response.get("type") == "response" and "data" in response:
+                return downloads_text([response["data"].get("download")])
+            return f"Failed to wait for a download: {response.get('data', {}).get('message', 'Unknown error')}"
+
         # Hover Tool
         @self._tool()
         async def content_hover(
