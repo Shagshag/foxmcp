@@ -331,6 +331,97 @@ class TestRequestFilters:
         assert [r["type"] for r in data["requests"]] == ["image"]
 
 
+def jpeg(color):
+    """A tiny real JPEG, for recording tests"""
+    from PIL import Image
+    import io
+    out = io.BytesIO()
+    Image.new("RGB", (8, 6), color).save(out, "JPEG")
+    return out.getvalue()
+
+
+class FrameServer:
+    """Plays the extension's recording requests with canned frames"""
+
+    def __init__(self, frames):
+        self.frames = frames
+        self.actions = []
+
+    async def send_request_and_wait(self, request, timeout=30.0):
+        self.actions.append(request["action"])
+        action = request["action"]
+        if action == "tabs.record_start":
+            return {"type": "response", "data": {"recordingId": "rec-4", "intervalMs": 500, "maxFrames": 60}}
+        if action == "tabs.record_stop":
+            return {"type": "response", "data": {"frames": len(self.frames), "error": None}}
+        if action == "tabs.record_frame":
+            data = self.frames[request["data"]["index"]]
+            url = "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+            return {"type": "response", "data": {"dataUrl": url, "delayMs": 500}}
+        return {"type": "response", "data": {"discarded": True}}
+
+
+class TestRecording:
+
+    @pytest.fixture
+    def record(self):
+        pytest.importorskip("PIL")
+
+        def make(frames):
+            server = FrameServer(frames)
+            tools = FoxMCPTools(server)
+
+            async def call(name, **kwargs):
+                tool = await tools.mcp.get_tool(name)
+                return await tool.fn(**kwargs)
+            return server, call
+        return make
+
+    @pytest.mark.asyncio
+    async def test_start_sends_the_settings(self, record):
+        server, call = record([])
+        stub = StubWebSocketServer()
+        stub.response = {"type": "response", "data": {"recordingId": "rec-4", "intervalMs": 250, "maxFrames": 10}}
+        tools = FoxMCPTools(stub)
+        tool = await tools.mcp.get_tool("tabs_record_start")
+
+        result = await tool.fn(profile_id=1, tab_id=4, interval_ms=250, max_frames=10)
+
+        assert stub.sent_request["action"] == "tabs.record_start"
+        assert stub.sent_request["data"] == {
+            "tabId": 4, "intervalMs": 250, "maxFrames": 10, "scale": 0.5, "quality": 50}
+        assert result == "Recording tab 4 as rec-4: a frame every 250 ms, up to 10 frames"
+
+    @pytest.mark.asyncio
+    async def test_stop_builds_a_gif_and_merges_repeats(self, record, tmp_path):
+        from PIL import Image
+        red, blue = jpeg("red"), jpeg("blue")
+        server, call = record([red, red, blue])
+        target = tmp_path / "out" / "demo"
+
+        result = await call("tabs_record_stop", profile_id=1, recording_id="rec-4", filename=str(target))
+
+        gif = tmp_path / "out" / "demo.gif"
+        assert gif.exists()
+        assert "3 frame(s) (2 distinct)" in result
+        with Image.open(gif) as image:
+            assert image.n_frames == 2
+        assert server.actions == ["tabs.record_stop", "tabs.record_frame", "tabs.record_frame",
+                                  "tabs.record_frame", "tabs.record_discard"]
+
+    @pytest.mark.asyncio
+    async def test_without_pillow_frames_are_saved_as_files(self, record, tmp_path, monkeypatch):
+        import sys
+        server, call = record([jpeg("red"), jpeg("blue")])
+        monkeypatch.setitem(sys.modules, "PIL", None)
+
+        result = await call("tabs_record_stop", profile_id=1, recording_id="rec-4",
+                            filename=str(tmp_path / "demo.gif"))
+
+        assert "Pillow is not installed" in result
+        assert sorted(p.name for p in (tmp_path / "demo").iterdir()) == ["frame-000.jpg", "frame-001.jpg"]
+
+
 class TestConsole:
 
     @pytest.mark.asyncio

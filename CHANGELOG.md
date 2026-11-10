@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `content_wait_download`. The extension asks for the `downloads` permission.
 - `tabs_capture_screenshot` captures a region, an element or a scaled image.
 - `requests_list_captured` filters by URL, method, type, status and failure.
+- `tabs_record_start` and `tabs_record_stop` record a tab and save an animated GIF (needs the optional `gif` extra, Pillow; otherwise numbered JPEG files).
 - Snapshots show field labels, values and states, and list open shadow DOM
   and same-origin iframes.
 - Content requests load a discarded tab first.
