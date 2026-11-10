@@ -170,6 +170,7 @@ for the complete input-assignment example and transfer details.
 - `content_execute_script(profile_id, tab_id, code)` - Execute JavaScript directly
 - `content_execute_predefined(profile_id, tab_id, script_name, script_args="")` - Execute predefined external scripts
 - `content_snapshot(profile_id, tab_id, max_elements=300)` - List visible interactive elements, each with a ref
+- `content_wait(profile_id, tab_id, selector=None, text=None, url=None, gone=False, timeout=10)` - Wait until the tab has loaded and the selector, text or URL is present (or, with `gone`, absent); fails after `timeout` seconds (maximum 120)
 - `content_click(profile_id, tab_id, ref=None, selector=None, double_click=False)` - Click an element by ref or selector
 - `content_type(profile_id, tab_id, text, ref=None, selector=None, clear=True, submit=False)` - Type into an input or editable element
 - `content_press_key(profile_id, tab_id, key, ref=None, selector=None)` - Press a key on an element, or on the focused one

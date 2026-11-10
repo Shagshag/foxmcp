@@ -884,6 +884,20 @@ afterwards. A stale ref is an error naming the ref.
 Each answers with the element it acted on, described as in a snapshot:
 `{"clicked": "[r3] button \"Next\""}`, `{"typed": ...}`, `{"pressed": "Escape"}`.
 
+#### Wait
+`content.wait` polls the tab until it has finished loading and, when given, the
+`selector` matches, the `text` is in the page and the tab URL contains `url`.
+`state: "absent"` waits for the selector or text to disappear instead. `timeoutMs`
+defaults to 10000 and is capped at 120000. A page that is navigating or has no
+content script yet is looked at again, not treated as an error.
+
+```json
+{"action": "content.wait", "data": {"tabId": 123, "selector": "#done", "text": null, "url": null, "state": "present", "timeoutMs": 10000}}
+```
+
+It answers `{"waitedMs": 420, "url": "...", "title": "..."}`, or a `WAIT_TIMEOUT`
+error saying what it was still waiting for.
+
 #### Upload Files
 `content_upload_files` reads a file, or every file in a folder, from the server's
 disk and sends it in four steps. Each chunk is a separate request that waits for

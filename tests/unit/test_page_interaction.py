@@ -61,6 +61,32 @@ class TestSnapshot:
         assert '[r2] button "Save"' in result
 
 
+class TestWait:
+
+    @pytest.mark.asyncio
+    async def test_sends_what_to_wait_for(self, call_tool, stub_server):
+        stub_server.response = {"type": "response", "data": {
+            "waitedMs": 420, "url": "https://example.org/done", "title": "Done"}}
+
+        result = await call_tool("content_wait", profile_id=1, tab_id=4,
+                                 selector="#ok", text="Saved", timeout=5, gone=True)
+
+        assert stub_server.sent_request["action"] == "content.wait"
+        assert stub_server.sent_request["data"] == {
+            "tabId": 4, "selector": "#ok", "text": "Saved", "url": None,
+            "state": "absent", "timeoutMs": 5000}
+        assert result == "Ready after 420 ms: Done (https://example.org/done)"
+
+    @pytest.mark.asyncio
+    async def test_reports_a_timeout(self, call_tool, stub_server):
+        stub_server.response = {"type": "error", "data": {
+            "message": "Timed out after 1000 ms: it did not appear"}}
+
+        result = await call_tool("content_wait", profile_id=1, tab_id=4, selector="#ok", timeout=1)
+
+        assert result == "Failed to wait: Timed out after 1000 ms: it did not appear"
+
+
 class TestClick:
 
     @pytest.mark.asyncio
