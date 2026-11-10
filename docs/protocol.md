@@ -112,6 +112,18 @@ Timeout rejects pending injections without remembering Deny. Explicit decisions
 are remembered only for that tab/current origin.
 See [configuration](configuration.md#script-injection-consent) for user behavior.
 
+### Page interaction tools (1.8.0)
+
+Protocol ID remains 3. Compared with released v1.7.0, every change adds a
+request (`content.snapshot`, `click`, `type`, `press_key`, `hover`, `drag`,
+`scroll`, `select_option`, `fill_form`, `wait`, `console`, `dialogs`,
+`list_downloads`, `wait_download`, `upload_*`, `capture_file_input`) or adds
+optional parameters (`rect`, `scale`, `ref`, `selector` and `padding` on the two
+capture actions). Existing parameters, defaults, responses and errors keep their
+meaning, and `requests_list_captured` filters on the server only. An extension
+older than this one answers `UNKNOWN_ACTION` to the new requests, as it does for
+`tabs.captureTab`. The `downloads` permission is new in the manifest.
+
 ### Server composition refactor (2026-10-31)
 
 The refactor alone retained protocol ID 3. Compared with released v1.6.0,

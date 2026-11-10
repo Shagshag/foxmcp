@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - Fork release (shagshag)
+
+### Added
+
+- Page interaction tools from pull requests 12 to 14: `content_snapshot`,
+  `content_click`, `content_type`, `content_press_key`,
+  `content_upload_files`, and an overlay with a moving cursor.
+- `content_wait`, `content_hover`, `content_drag`, `content_scroll`,
+  `content_select_option`, `content_fill_form`, `content_read_console`,
+  `content_handle_dialogs`, `content_list_downloads` and
+  `content_wait_download`. The extension asks for the `downloads` permission.
+- `tabs_capture_screenshot` captures a region, an element or a scaled image.
+- `requests_list_captured` filters by URL, method, type, status and failure.
+- Snapshots show field labels, values and states, and list open shadow DOM
+  and same-origin iframes.
+- Content requests load a discarded tab first.
+
+### Changed
+
+- The fork's add-on ID is `foxmcp-shagshag@shagshag.net`; profile name
+  lookup falls back to `foxmcp@codemud.org`.
+
 ## [1.7.0] - 2026-11-07
 
 ### Added
