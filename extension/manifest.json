@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "name": "FoxMCP",
+  "name": "FoxMCP (shagshag)",
   "version": "1.7.0",
   "description": "Browser extension that exposes data and functions to MCP clients via WebSocket",
   "author": "FoxMCP Project",
@@ -53,7 +53,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "foxmcp@codemud.org"
+      "id": "foxmcp-shagshag@shagshag.net"
     }
   },
   "icons": {

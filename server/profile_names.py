@@ -98,7 +98,8 @@ class FirefoxProfileNames:
                     if not matches:
                         continue
                     mapping = json.loads(json.loads(matches[-1]))
-                    extension_uuid = mapping.get("foxmcp@codemud.org")
+                    extension_uuid = (mapping.get("foxmcp-shagshag@shagshag.net")
+                                      or mapping.get("foxmcp@codemud.org"))
                     if isinstance(extension_uuid, str):
                         candidates.setdefault(extension_uuid.lower(), {})[path] = name
                 except (OSError, ValueError, TypeError, AttributeError) as error:
