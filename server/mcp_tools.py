@@ -2409,12 +2409,12 @@ class FoxMCPTools:
 
             return f"Unable to execute script in tab {tab_id}"
 
-        async def page_request(message: Dict[str, Any]):
+        async def page_request(profile_id: int, message: Dict[str, Any]):
             """Send a {"action", "data"} content request
 
             Returns (data, None) on success and (None, error message) on failure.
             """
-            response = await self.websocket_server.send_request_and_wait({
+            response = await self._send(profile_id, {
                 "id": str(uuid.uuid4()),
                 "type": "request",
                 **message,
@@ -2433,7 +2433,7 @@ class FoxMCPTools:
 
         # Snapshot Tool
         @self._tool()
-        async def content_snapshot(tab_id: int, max_elements: int = 300) -> str:
+        async def content_snapshot(profile_id: int, tab_id: int, max_elements: int = 300) -> str:
             """List the visible interactive elements of a page, each with a ref
             that content_click and content_type accept
 
@@ -2441,7 +2441,7 @@ class FoxMCPTools:
                 tab_id: ID of the tab to snapshot
                 max_elements: Stop listing after this many elements (default: 300)
             """
-            data, error = await page_request(
+            data, error = await page_request(profile_id, 
                 {"action": "content.snapshot",
                  "data": {"tabId": tab_id, "maxElements": max_elements}}
             )
@@ -2453,6 +2453,7 @@ class FoxMCPTools:
         # Click Tool
         @self._tool()
         async def content_click(
+            profile_id: int,
             tab_id: int,
             ref: Optional[str] = None,
             selector: Optional[str] = None,
@@ -2467,7 +2468,7 @@ class FoxMCPTools:
                 double_click: Double-click instead, as opening a file or folder
                     in a file list usually needs (default: False)
             """
-            data, error = await page_request({
+            data, error = await page_request(profile_id, {
                 "action": "content.click",
                 "data": {**target(tab_id, ref, selector), "doubleClick": double_click}
             })
@@ -2478,6 +2479,7 @@ class FoxMCPTools:
         # Type Tool
         @self._tool()
         async def content_type(
+            profile_id: int,
             tab_id: int,
             text: str,
             ref: Optional[str] = None,
@@ -2495,7 +2497,7 @@ class FoxMCPTools:
                 clear: Replace the current value instead of appending (default: True)
                 submit: Press Enter afterwards (default: False)
             """
-            data, error = await page_request({
+            data, error = await page_request(profile_id, {
                 "action": "content.type",
                 "data": {**target(tab_id, ref, selector),
                          "text": text, "clear": clear, "submit": submit}
@@ -2507,6 +2509,7 @@ class FoxMCPTools:
         # Press Key Tool
         @self._tool()
         async def content_press_key(
+            profile_id: int,
             tab_id: int, key: str, ref: Optional[str] = None, selector: Optional[str] = None
         ) -> str:
             """Press a key such as "Enter", "Escape" or "Tab" on an element, or on
@@ -2518,7 +2521,7 @@ class FoxMCPTools:
                 ref: Element ref from content_snapshot
                 selector: CSS selector, used when no ref is given
             """
-            data, error = await page_request({
+            data, error = await page_request(profile_id, {
                 "action": "content.press_key",
                 "data": {"tabId": tab_id, "key": key, "ref": ref, "selector": selector}
             })
@@ -2529,6 +2532,7 @@ class FoxMCPTools:
         # Upload Files Tool
         @self._tool()
         async def content_upload_files(
+            profile_id: int,
             tab_id: int,
             path: str,
             ref: Optional[str] = None,
@@ -2572,7 +2576,7 @@ class FoxMCPTools:
                 files = [(path, "")]
 
             if trigger_ref or trigger_selector:
-                captured, error = await page_request({
+                captured, error = await page_request(profile_id, {
                     "action": "content.capture_file_input",
                     "data": {"tabId": tab_id, "triggerRef": trigger_ref,
                              "triggerSelector": trigger_selector}
@@ -2583,7 +2587,7 @@ class FoxMCPTools:
             input_target = target(tab_id, ref, selector)
 
             upload_id = str(uuid.uuid4())
-            _, error = await page_request({
+            _, error = await page_request(profile_id, {
                 "action": "content.upload_begin",
                 "data": {"uploadId": upload_id, "files": [
                     {"name": os.path.basename(full), "relativePath": relative}
@@ -2594,14 +2598,14 @@ class FoxMCPTools:
             for index, (full, _) in enumerate(files):
                 with open(full, "rb") as handle:
                     while chunk := handle.read(UPLOAD_CHUNK_BYTES):
-                        _, error = await page_request({
+                        _, error = await page_request(profile_id, {
                             "action": "content.upload_chunk",
                             "data": {"uploadId": upload_id, "fileIndex": index,
                                      "data": base64.b64encode(chunk).decode("ascii")}
                         })
                         if error:
                             return f"Failed to upload {full}: {error}"
-            data, error = await page_request({
+            data, error = await page_request(profile_id, {
                 "action": "content.upload_finish",
                 "data": {**input_target, "uploadId": upload_id}
             })

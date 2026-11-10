@@ -23,7 +23,7 @@ class StubWebSocketServer:
         self.sent_request = None
         self.response = {"type": "response", "data": {}}
 
-    async def send_request_and_wait(self, request):
+    async def send_request_and_wait(self, request, timeout=30.0):
         self.sent_request = request
         return self.response
 
@@ -52,8 +52,9 @@ class TestSnapshot:
             "title": "Form", "url": "https://example.org/form",
             "snapshot": '[r1] input "Name" (type=text)\n[r2] button "Save"'}}
 
-        result = await call_tool("content_snapshot", tab_id=4)
+        result = await call_tool("content_snapshot", profile_id=1, tab_id=4)
 
+        assert stub_server.sent_request["profile_id"] == 1
         assert stub_server.sent_request["action"] == "content.snapshot"
         assert stub_server.sent_request["data"] == {"tabId": 4, "maxElements": 300}
         assert result.startswith("Snapshot of Form (https://example.org/form):")
@@ -66,7 +67,7 @@ class TestClick:
     async def test_sends_the_ref(self, call_tool, stub_server):
         stub_server.response = {"type": "response", "data": {"clicked": '[r2] button "Save"'}}
 
-        result = await call_tool("content_click", tab_id=4, ref="r2")
+        result = await call_tool("content_click", profile_id=1, tab_id=4, ref="r2")
 
         assert stub_server.sent_request["action"] == "content.click"
         assert stub_server.sent_request["data"] == {
@@ -77,7 +78,7 @@ class TestClick:
     async def test_double_click(self, call_tool, stub_server):
         stub_server.response = {"type": "response", "data": {"clicked": '[r9] row "Characters"'}}
 
-        result = await call_tool("content_click", tab_id=4, ref="r9", double_click=True)
+        result = await call_tool("content_click", profile_id=1, tab_id=4, ref="r9", double_click=True)
 
         assert stub_server.sent_request["data"]["doubleClick"] is True
         assert result == 'Double-clicked [r9] row "Characters"'
@@ -85,7 +86,7 @@ class TestClick:
     @pytest.mark.asyncio
     async def test_requires_a_target(self, call_tool, stub_server):
         with pytest.raises(ValueError, match="ref"):
-            await call_tool("content_click", tab_id=4)
+            await call_tool("content_click", profile_id=1, tab_id=4)
         assert stub_server.sent_request is None
 
     @pytest.mark.asyncio
@@ -93,7 +94,7 @@ class TestClick:
         stub_server.response = {"type": "error", "data": {
             "message": "No element with ref r9; take a new snapshot"}}
 
-        result = await call_tool("content_click", tab_id=4, ref="r9")
+        result = await call_tool("content_click", profile_id=1, tab_id=4, ref="r9")
 
         assert result == "Failed to click: No element with ref r9; take a new snapshot"
 
@@ -104,7 +105,7 @@ class TestType:
     async def test_replaces_by_default_and_can_submit(self, call_tool, stub_server):
         stub_server.response = {"type": "response", "data": {"typed": '[r1] input "Dor"'}}
 
-        await call_tool("content_type", tab_id=4, selector="#name", text="Dor", submit=True)
+        await call_tool("content_type", profile_id=1, tab_id=4, selector="#name", text="Dor", submit=True)
 
         assert stub_server.sent_request["action"] == "content.type"
         assert stub_server.sent_request["data"] == {
@@ -118,7 +119,7 @@ class TestPressKey:
     async def test_targets_the_focused_element_when_none_given(self, call_tool, stub_server):
         stub_server.response = {"type": "response", "data": {"pressed": "Escape"}}
 
-        result = await call_tool("content_press_key", tab_id=4, key="Escape")
+        result = await call_tool("content_press_key", profile_id=1, tab_id=4, key="Escape")
 
         assert stub_server.sent_request["action"] == "content.press_key"
         assert stub_server.sent_request["data"] == {
@@ -132,7 +133,7 @@ class RecordingWebSocketServer:
     def __init__(self):
         self.requests = []
 
-    async def send_request_and_wait(self, request):
+    async def send_request_and_wait(self, request, timeout=30.0):
         self.requests.append(request)
         if request["action"] == "content.capture_file_input":
             return {"type": "response", "data": {"ref": "r7", "multiple": False, "directory": True}}
@@ -171,7 +172,7 @@ class TestUploadFiles:
 
     @pytest.mark.asyncio
     async def test_folder_files_keep_paths_under_the_folder_name(self, upload, recorder, folder):
-        await upload(tab_id=4, path=str(folder), ref="r2")
+        await upload(profile_id=1, tab_id=4, path=str(folder), ref="r2")
 
         begin = recorder.requests[0]
         assert begin["action"] == "content.upload_begin"
@@ -181,7 +182,7 @@ class TestUploadFiles:
 
     @pytest.mark.asyncio
     async def test_large_files_are_split_into_chunks(self, upload, recorder, folder):
-        await upload(tab_id=4, path=str(folder), ref="r2")
+        await upload(profile_id=1, tab_id=4, path=str(folder), ref="r2")
 
         chunks = [r["data"] for r in recorder.requests if r["action"] == "content.upload_chunk"]
         assert [c["fileIndex"] for c in chunks] == [0, 1, 1]
@@ -193,7 +194,7 @@ class TestUploadFiles:
 
     @pytest.mark.asyncio
     async def test_trigger_fills_the_input_it_opens(self, upload, recorder, folder):
-        result = await upload(tab_id=4, path=str(folder), trigger_ref="r5")
+        result = await upload(profile_id=1, tab_id=4, path=str(folder), trigger_ref="r5")
 
         assert recorder.actions()[0] == "content.capture_file_input"
         assert recorder.requests[0]["data"]["triggerRef"] == "r5"
@@ -202,13 +203,13 @@ class TestUploadFiles:
 
     @pytest.mark.asyncio
     async def test_single_file_has_no_relative_path(self, upload, recorder, folder):
-        await upload(tab_id=4, path=str(folder / "a.txt"), selector="#plain")
+        await upload(profile_id=1, tab_id=4, path=str(folder / "a.txt"), selector="#plain")
 
         assert recorder.requests[0]["data"]["files"] == [{"name": "a.txt", "relativePath": ""}]
 
     @pytest.mark.asyncio
     async def test_missing_path_sends_nothing(self, upload, recorder, tmp_path):
-        result = await upload(tab_id=4, path=str(tmp_path / "nope"), ref="r2")
+        result = await upload(profile_id=1, tab_id=4, path=str(tmp_path / "nope"), ref="r2")
 
         assert result.endswith("does not exist")
         assert recorder.requests == []
