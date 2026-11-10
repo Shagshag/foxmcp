@@ -56,7 +56,8 @@ class TestSnapshot:
 
         assert stub_server.sent_request["profile_id"] == 1
         assert stub_server.sent_request["action"] == "content.snapshot"
-        assert stub_server.sent_request["data"] == {"tabId": 4, "maxElements": 300}
+        assert stub_server.sent_request["data"] == {
+            "tabId": 4, "maxElements": 300, "viewportOnly": False}
         assert result.startswith("Snapshot of Form (https://example.org/form):")
         assert '[r2] button "Save"' in result
 

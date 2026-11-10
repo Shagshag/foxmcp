@@ -2470,17 +2470,24 @@ class FoxMCPTools:
 
         # Snapshot Tool
         @self._tool()
-        async def content_snapshot(profile_id: int, tab_id: int, max_elements: int = 300) -> str:
+        async def content_snapshot(profile_id: int, tab_id: int, max_elements: int = 300,
+                                   viewport_only: bool = False) -> str:
             """List the visible interactive elements of a page, each with a ref
             that content_click and content_type accept
+
+            Fields show their label and current value (never a password's), and
+            elements show states such as disabled, checked, expanded or focused.
+            Open shadow DOM and same-origin iframes are included.
 
             Args:
                 tab_id: ID of the tab to snapshot
                 max_elements: Stop listing after this many elements (default: 300)
+                viewport_only: List only what is on screen now, which is shorter on long pages
             """
-            data, error = await page_request(profile_id, 
+            data, error = await page_request(profile_id,
                 {"action": "content.snapshot",
-                 "data": {"tabId": tab_id, "maxElements": max_elements}}
+                 "data": {"tabId": tab_id, "maxElements": max_elements,
+                          "viewportOnly": viewport_only}}
             )
             if error:
                 return f"Failed to snapshot page: {error}"

@@ -848,7 +848,8 @@ across snapshots, so it still works after other parts of the page re-render.
   "action": "content.snapshot",
   "data": {
     "tabId": 123,
-    "maxElements": 300
+    "maxElements": 300,
+    "viewportOnly": false
   },
   "timestamp": "2025-09-03T12:00:00.000Z"
 }

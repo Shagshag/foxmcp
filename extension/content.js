@@ -29,8 +29,28 @@ function isVisible(el) {
   if (rect.width === 0 || rect.height === 0) {
     return false;
   }
-  const style = getComputedStyle(el);
+  const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
   return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+}
+
+// Every root a page's elements can live in: the document, the open shadow roots
+// inside it, and the documents of same-origin iframes (a cross-origin frame is
+// out of reach). Web components and embedded editors hide their controls there.
+function searchRoots(root = document, roots = []) {
+  roots.push(root);
+  for (const el of root.querySelectorAll('*')) {
+    if (el.shadowRoot) {
+      searchRoots(el.shadowRoot, roots);
+    }
+    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+      try {
+        if (el.contentDocument) searchRoots(el.contentDocument, roots);
+      } catch (error) {
+        // cross-origin
+      }
+    }
+  }
+  return roots;
 }
 
 // A ref stays on its element across snapshots, so a ref read from one
@@ -44,35 +64,76 @@ function refFor(el) {
   return ref;
 }
 
+const BUTTON_INPUT_TYPES = ['button', 'submit', 'reset'];
+
+function oneLine(text, max) {
+  return (text || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+// A field's label, so a form reads as "Email" rather than as a row of blanks,
+// and its current value, which is what tells a client what is already filled in.
 function describe(el) {
   const role = el.getAttribute('role') || el.tagName.toLowerCase();
-  const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder ||
-    el.title || el.alt || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+    && !BUTTON_INPUT_TYPES.includes(el.type);
+  const name = oneLine(el.getAttribute('aria-label')
+    || (isField ? (el.labels && el.labels[0] && el.labels[0].innerText) || el.placeholder || el.title
+      : el.innerText || el.value || el.title || el.alt), 80);
   const extras = [];
   if (el.type && el.tagName === 'INPUT') extras.push('type=' + el.type);
+  if (isField && el.type !== 'password' && el.type !== 'checkbox' && el.type !== 'radio'
+      && el.type !== 'file') {
+    const value = el.tagName === 'SELECT'
+      ? Array.from(el.selectedOptions).map(option => option.text).join(', ')
+      : el.value;
+    if (value) extras.push(`value="${oneLine(value, 40)}"`);
+  }
   if (el.disabled) extras.push('disabled');
-  if (el.checked) extras.push('checked');
+  if (el.required) extras.push('required');
+  if (el.readOnly) extras.push('readonly');
+  if (el.checked || el.getAttribute('aria-checked') === 'true') extras.push('checked');
   if (el.getAttribute('aria-selected') === 'true') extras.push('selected');
+  const expanded = el.getAttribute('aria-expanded');
+  if (expanded) extras.push(expanded === 'true' ? 'expanded' : 'collapsed');
+  if (el.getRootNode().activeElement === el) extras.push('focused');
   return `[${refFor(el)}] ${role} "${name}"${extras.length ? ' (' + extras.join(', ') + ')' : ''}`;
 }
 
-function snapshot(maxElements) {
+function inViewport(el) {
+  const rect = el.getBoundingClientRect();
+  const view = el.ownerDocument.defaultView || window;
+  return rect.bottom > 0 && rect.right > 0 && rect.top < view.innerHeight && rect.left < view.innerWidth;
+}
+
+function snapshot(maxElements, viewportOnly) {
   const lines = [];
-  for (const el of document.querySelectorAll(INTERACTIVE_SELECTOR)) {
-    if (!isVisible(el)) continue;
-    lines.push(describe(el));
-    if (lines.length >= maxElements) {
-      lines.push(`... truncated at ${maxElements} elements`);
-      break;
+  for (const root of searchRoots()) {
+    let titled = root === document;
+    for (const el of root.querySelectorAll(INTERACTIVE_SELECTOR)) {
+      if (!isVisible(el) || (viewportOnly && !inViewport(el))) continue;
+      if (!titled) {
+        titled = true;
+        lines.push(`-- ${root.host ? 'inside ' + root.host.tagName.toLowerCase() + ' (shadow DOM)' : 'frame ' + (root.location?.href || '')}`);
+      }
+      lines.push(describe(el));
+      if (lines.length >= maxElements) {
+        lines.push(`... truncated at ${maxElements} elements`);
+        return lines.join('\n');
+      }
     }
   }
   return lines.join('\n');
 }
 
 function findTarget({ ref, selector }) {
-  const el = ref
-    ? document.querySelector(`[${REF_ATTR}="${CSS.escape(ref)}"]`)
-    : document.querySelector(selector);
+  const find = root => ref ? root.querySelector(`[${REF_ATTR}="${CSS.escape(ref)}"]`) : root.querySelector(selector);
+  let el = find(document);
+  if (!el) {
+    for (const root of searchRoots().slice(1)) {
+      el = find(root);
+      if (el) break;
+    }
+  }
   if (!el) {
     throw new Error(ref ? `No element with ref ${ref}; take a new snapshot` : `No element matches ${selector}`);
   }
@@ -337,7 +398,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'snapshot':
         showOverlay();
-        sendResponse({ snapshot: snapshot(data.maxElements || 300), url: location.href, title: document.title });
+        sendResponse({ snapshot: snapshot(data.maxElements || 300, !!data.viewportOnly), url: location.href, title: document.title });
         break;
 
       case 'click': {
