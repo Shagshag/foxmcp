@@ -724,7 +724,6 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       }
 
-      // Where an element is in the viewport, so a screenshot can be cropped to it.
       // Where an element is in the document, so a screenshot can be cropped to it. A screenshot
       // crop is in document coordinates, from the top-left of the whole page, while
       // getBoundingClientRect is relative to the visible area, so the scroll position is added.
@@ -734,8 +733,20 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const el = findTarget(data);
         el.scrollIntoView({ block: 'center', inline: 'center' });
         const rect = el.getBoundingClientRect();
+        // An element in a same-origin iframe is measured from that frame's own viewport, so
+        // add where each frame sits in the frame around it, up to this page.
+        let x = rect.left;
+        let y = rect.top;
+        for (let win = el.ownerDocument.defaultView; win && win !== window; win = win.parent) {
+          const frame = win.frameElement;
+          if (!frame) break;
+          const box = frame.getBoundingClientRect();
+          const style = getComputedStyle(frame);
+          x += box.left + frame.clientLeft + parseFloat(style.paddingLeft);
+          y += box.top + frame.clientTop + parseFloat(style.paddingTop);
+        }
         sendResponse({
-          rect: { x: rect.left + window.scrollX, y: rect.top + window.scrollY,
+          rect: { x: x + window.scrollX, y: y + window.scrollY,
                   width: rect.width, height: rect.height },
           described: describe(el)
         });
