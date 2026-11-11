@@ -967,6 +967,8 @@ async function cropToElement(tabId, data) {
 }
 
 // Screen recordings in progress or waiting to be fetched, by recording ID
+// Screen recordings in progress, by recording ID. A recording sends small JPEG captures of one
+// tab to a receiver on this machine as it goes and keeps no frames, so nothing grows with its length.
 const recordings = new Map();
 
 function stopRecordingTimer(recording) {
@@ -990,6 +992,155 @@ function captureRegionOptions(data) {
   }
   return result;
 }
+
+function closeRecording(recording) {
+  if (!recording) return;
+  // A frame still under way when a recording is stopped, replaced or dropped must not be sent.
+  recording.closed = true;
+  stopRecordingTimer(recording);
+  if (recording.socket) {
+    try {
+      recording.socket.close();
+    } catch (error) {
+      // Already closed.
+    }
+    recording.socket = null;
+  }
+}
+
+// Where frames may be sent: a web server or a websocket on this machine. The extension can
+// reach any site, so it does not send the captures of a tab anywhere else.
+function recordingTarget(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch (error) {
+    throw new Error('url must be a valid URL');
+  }
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) {
+    throw new Error('url must start with http://, https://, ws:// or wss://');
+  }
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
+    throw new Error('url must point to this machine: 127.0.0.1, localhost or [::1]');
+  }
+  if (url.username || url.password) {
+    throw new Error('url must not carry credentials');
+  }
+  return url;
+}
+
+function openRecordingSocket(href) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(href);
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error('the receiver did not accept the connection in time'));
+    }, 5000);
+    socket.onopen = () => {
+      clearTimeout(timer);
+      resolve(socket);
+    };
+    socket.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error('the receiver did not accept the connection'));
+    };
+  });
+}
+
+function dataUrlToBytes(dataUrl) {
+  const binary = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// One frame to the receiver. Over HTTP, a POST of the JPEG with the recording, the frame number
+// (from 0) and the time in headers. Over a websocket, a text message holding the same three
+// fields as JSON, then a binary message holding the JPEG.
+async function sendRecordingFrame(recording, bytes, frame, time) {
+  if (recording.socket) {
+    if (recording.socket.readyState !== WebSocket.OPEN) {
+      throw new Error('the receiver closed the connection');
+    }
+    // A receiver that does not keep up would otherwise queue frames in memory.
+    if (recording.socket.bufferedAmount > 0) {
+      recording.skipped++;
+      return false;
+    }
+    recording.socket.send(JSON.stringify({ recording: recording.id, frame, time }));
+    recording.socket.send(bytes);
+    return true;
+  }
+  // No redirects (a receiver on this machine must not pass the frames on to another host),
+  // no cookies, and a time limit, so a receiver that never answers cannot hang a recording.
+  const response = await fetch(recording.url.href, {
+    method: 'POST',
+    redirect: 'error',
+    credentials: 'omit',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(10000),
+    headers: {
+      'Content-Type': 'image/jpeg',
+      'X-FoxMCP-Recording': recording.id,
+      'X-FoxMCP-Frame': String(frame),
+      'X-FoxMCP-Time': time
+    },
+    body: bytes
+  });
+  if (!response.ok) {
+    throw new Error(`the receiver answered HTTP ${response.status}`);
+  }
+  return true;
+}
+
+async function captureRecordingFrame(recording) {
+  const dataUrl = await browser.tabs.captureTab(recording.tabId, recording.options);
+  // The recording may have been stopped, replaced or dropped while the capture was under way.
+  if (recording.closed) return;
+  const frame = recording.sent;
+  const delivered = await sendRecordingFrame(
+    recording, dataUrlToBytes(dataUrl), frame, new Date().toISOString());
+  if (delivered) recording.sent++;
+}
+
+// One tick of the timer. A tick that finds the previous frame still on its way is skipped, so a
+// slow receiver costs frames, not memory.
+async function tickRecording(recording) {
+  if (recording.sent >= recording.maxFrames) {
+    stopRecordingTimer(recording);
+    return;
+  }
+  if (recording.busy) {
+    recording.skipped++;
+    return;
+  }
+  recording.busy = true;
+  try {
+    await captureRecordingFrame(recording);
+  } catch (error) {
+    recording.error = error.message;
+    stopRecordingTimer(recording);
+  } finally {
+    recording.busy = false;
+  }
+  if (recording.sent >= recording.maxFrames) {
+    closeRecording(recording);
+  }
+}
+
+// A recording is dropped when its tab closes and when the connection to the server ends
+// (see clearAllMonitors).
+function clearAllRecordings() {
+  for (const recording of recordings.values()) {
+    closeRecording(recording);
+  }
+  recordings.clear();
+}
+
+browser.tabs.onRemoved.addListener(tabId => {
+  closeRecording(recordings.get(`rec-${tabId}`));
+  recordings.delete(`rec-${tabId}`);
+});
 
 // The tab group properties a request sets, out of title, color and collapsed
 //
@@ -1345,48 +1496,74 @@ async function handleTabsAction(id, action, data) {
         }
         break;
 
-      // A screen recording is a series of small JPEG captures of one tab, kept
-      // here until the server has fetched them frame by frame and built the
-      // animation; no encoder runs in the browser.
+      // A screen recording sends small JPEG captures of one tab to a receiver on this machine,
+      // over HTTP or a websocket, until it is stopped or reaches maxFrames. The first frame is
+      // sent here, so a receiver that is not there, or that refuses it, is an error right away.
       case 'tabs.record_start': {
         const recordTabId = data.tabId;
         if (!isBrowserId(recordTabId)) {
           sendError(id, 'INVALID_PARAMETER', 'tabs.record_start needs a non-negative integer tabId');
           break;
         }
-        const recordingId = `rec-${recordTabId}`;
-        stopRecordingTimer(recordings.get(recordingId));
-        const intervalMs = Math.min(Math.max(Number(data.intervalMs) || 500, 100), 5000);
-        const recording = {
-          tabId: recordTabId, frames: [], times: [], busy: false, timer: null,
-          maxFrames: Math.min(Math.max(Number(data.maxFrames) || 60, 1), 300),
-          options: { format: 'jpeg', quality: Math.min(Math.max(Number(data.quality) || 50, 1), 100),
-                     scale: Number(data.scale) > 0 ? Number(data.scale) : 0.5 },
-          intervalMs
-        };
-        const grab = async () => {
-          if (recording.busy) return;
-          recording.busy = true;
-          try {
-            recording.frames.push(await browser.tabs.captureTab(recordTabId, recording.options));
-            recording.times.push(Date.now());
-          } catch (frameError) {
-            recording.error = frameError.message;
-            stopRecordingTimer(recording);
-          } finally {
-            recording.busy = false;
-          }
-          if (recording.frames.length >= recording.maxFrames) stopRecordingTimer(recording);
-        };
-        recordings.set(recordingId, recording);
-        await grab();
-        if (recording.error) {
-          recordings.delete(recordingId);
-          sendError(id, 'CAPTURE_ERROR', `Cannot record tab ${recordTabId}: ${recording.error}`);
+        const { intervalMs, maxFrames, quality, scale } = data;
+        if (!Number.isInteger(intervalMs) || intervalMs < 100 || intervalMs > 5000) {
+          sendError(id, 'INVALID_PARAMETER', 'intervalMs must be an integer from 100 to 5000');
           break;
         }
-        recording.timer = setInterval(grab, intervalMs);
-        sendResponse(id, action, { recordingId, intervalMs, maxFrames: recording.maxFrames });
+        if (!Number.isInteger(maxFrames) || maxFrames < 1 || maxFrames > 300) {
+          sendError(id, 'INVALID_PARAMETER', 'maxFrames must be an integer from 1 to 300');
+          break;
+        }
+        if (!Number.isInteger(quality) || quality < 1 || quality > 100) {
+          sendError(id, 'INVALID_PARAMETER', 'quality must be an integer from 1 to 100');
+          break;
+        }
+        if (!Number.isFinite(scale) || scale <= 0 || scale > 1) {
+          sendError(id, 'INVALID_PARAMETER', 'scale must be a finite number above 0 and at most 1');
+          break;
+        }
+        let target;
+        try {
+          target = recordingTarget(data.url);
+        } catch (targetError) {
+          sendError(id, 'INVALID_PARAMETER', targetError.message);
+          break;
+        }
+        const recordingId = `rec-${recordTabId}`;
+        closeRecording(recordings.get(recordingId));
+        const recording = {
+          id: recordingId, tabId: recordTabId, url: target, socket: null, sent: 0, skipped: 0,
+          busy: true, timer: null, error: null, maxFrames, intervalMs, started: Date.now(),
+          options: { format: 'jpeg', quality, scale }
+        };
+        recordings.set(recordingId, recording);
+        try {
+          if (target.protocol === 'ws:' || target.protocol === 'wss:') {
+            recording.socket = await openRecordingSocket(target.href);
+          }
+          await captureRecordingFrame(recording);
+        } catch (startError) {
+          closeRecording(recording);
+          if (recordings.get(recordingId) === recording) recordings.delete(recordingId);
+          sendError(id, 'API_ERROR',
+            `Cannot record tab ${recordTabId} to ${target.href}: ${startError.message}`);
+          break;
+        }
+        // Another start on this tab, or the tab closing, may have taken the recording over
+        // while the first frame was on its way.
+        if (recordings.get(recordingId) !== recording || recording.closed) {
+          closeRecording(recording);
+          sendError(id, 'API_ERROR',
+            `The recording of tab ${recordTabId} was replaced or its tab closed before it started`);
+          break;
+        }
+        recording.busy = false;
+        if (recording.sent < maxFrames) {
+          recording.timer = setInterval(() => tickRecording(recording), intervalMs);
+        } else {
+          closeRecording(recording);
+        }
+        sendResponse(id, action, { recordingId, url: target.href, intervalMs, maxFrames });
         break;
       }
 
@@ -1397,34 +1574,19 @@ async function handleTabsAction(id, action, data) {
           break;
         }
         stopRecordingTimer(recording);
-        while (recording.busy) await new Promise(resolve => setTimeout(resolve, 50));
-        sendResponse(id, action, {
-          frames: recording.frames.length, intervalMs: recording.intervalMs,
-          durationMs: recording.times.length ? recording.times[recording.times.length - 1] - recording.times[0] : 0,
-          error: recording.error || null
-        });
-        break;
-      }
-
-      case 'tabs.record_frame': {
-        const recording = recordings.get(data.recordingId);
-        if (!recording || !Number.isInteger(data.index) || data.index < 0 || data.index >= recording.frames.length) {
-          sendError(id, 'RECORDING_NOT_FOUND', `No frame ${data.index} in recording ${data.recordingId}`);
-          break;
+        // A frame that hangs must not hold the request until the server gives up.
+        for (let waited = 0; recording.busy && waited < 10000; waited += 50) {
+          await new Promise(resolve => setTimeout(resolve, 50));
         }
-        sendResponse(id, action, {
-          dataUrl: recording.frames[data.index],
-          // Time since the previous frame, so a pause in capturing is kept in the animation
-          delayMs: data.index === 0 ? recording.intervalMs : recording.times[data.index] - recording.times[data.index - 1]
-        });
+        const summary = {
+          frames: recording.sent, skipped: recording.skipped,
+          durationMs: Date.now() - recording.started, error: recording.error
+        };
+        closeRecording(recording);
+        recordings.delete(data.recordingId);
+        sendResponse(id, action, summary);
         break;
       }
-
-      case 'tabs.record_discard':
-        stopRecordingTimer(recordings.get(data.recordingId));
-        recordings.delete(data.recordingId);
-        sendResponse(id, action, { discarded: true });
-        break;
 
       case 'tabs.captureTab': {
         // One given tab, wherever it is: in the background, or in a window that is not in front.
@@ -2334,6 +2496,7 @@ function setupWebRequestListeners() {
 // The captured data goes with the monitors for the same reason: the request ids
 // that reach it come from requests.list_captured.
 function clearAllMonitors(reason) {
+  clearAllRecordings();
   const monitorCount = activeMonitors.size;
 
   activeMonitors.clear();

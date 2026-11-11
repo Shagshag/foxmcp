@@ -22,6 +22,7 @@ import json
 import math
 import base64
 from datetime import datetime
+from urllib.parse import urlsplit
 from typing import Annotated, Dict, Any, Literal, Optional, List, TypedDict, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -55,49 +56,6 @@ MAX_LOGGED_ARG_LENGTH = 120
 # waits for the extension's answer, so a large file never queues up as one
 # message several hundred megabytes long.
 UPLOAD_CHUNK_BYTES = 512 * 1024
-
-
-def assemble_recording(frames, filename):
-    """Write recorded frames as an animated GIF, or as numbered JPEGs if Pillow is missing
-
-    frames is a list of (jpeg bytes, delay in ms), where the delay is how long
-    the frame stays on screen. Identical frames in a row are merged into one
-    that stays longer, which keeps a recording of a mostly still page small.
-    Returns a sentence saying what was written and where.
-    """
-    merged = []
-    for data, delay in frames:
-        if merged and merged[-1][0] == data:
-            merged[-1][1] += delay
-        else:
-            merged.append([data, delay])
-    if not merged:
-        raise ValueError("The recording has no frames")
-
-    path = os.path.abspath(os.path.expanduser(filename))
-    try:
-        from PIL import Image
-        import io
-    except ImportError:
-        Image = None
-
-    if Image is not None:
-        if not path.lower().endswith(".gif"):
-            path += ".gif"
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        images = [Image.open(io.BytesIO(data)).convert("RGB") for data, _ in merged]
-        images[0].save(path, save_all=True, append_images=images[1:], loop=0, optimize=True,
-                       duration=[max(int(delay), 20) for _, delay in merged])
-        return (f"Saved a GIF of {len(frames)} frame(s) ({len(merged)} distinct) to '{path}' "
-                f"({os.path.getsize(path)} bytes)")
-
-    folder = os.path.splitext(path)[0]
-    os.makedirs(folder, exist_ok=True)
-    for index, (data, _) in enumerate(merged):
-        with open(os.path.join(folder, f"frame-{index:03d}.jpg"), "wb") as handle:
-            handle.write(data)
-    return (f"Pillow is not installed, so no GIF was made: saved {len(merged)} distinct frame(s) as "
-            f"frame-000.jpg and so on in '{folder}'. Install it with 'pip install pillow' for a GIF")
 
 
 def format_script_args_for_log(args_list):
@@ -1694,7 +1652,7 @@ class FoxMCPTools:
 
         # Screen Recording Tools
         async def tab_request(profile_id: int, message: Dict[str, Any]):
-            """Send a request; returns (data, None) on success and (None, error message) on failure"""
+            """Send a request; returns (data, None), or (None, error message) on failure"""
             response = await self._send(profile_id, {
                 "id": str(uuid.uuid4()), "type": "request", **message,
                 "timestamp": datetime.now().isoformat()
@@ -1704,75 +1662,93 @@ class FoxMCPTools:
             if response.get("type") == "response" and "data" in response:
                 return response["data"], None
             return None, response.get("data", {}).get("message", "Unknown error")
+
         @self._tool()
         async def tabs_record_start(
             profile_id: int,
             tab_id: int,
+            url: str,
             interval_ms: int = 500,
             max_frames: int = 60,
             scale: float = 0.5,
             quality: int = 50
         ) -> str:
-            """Start recording a tab as a series of small screenshots, to turn into a GIF
-            with tabs_record_stop once the actions to show are done
+            """Start recording a tab by sending small screenshots, as they are taken, to a
+            receiver on this machine that you run, until tabs_record_stop or max_frames
 
-            Recording stops by itself after max_frames, so a forgotten recording
-            does not grow without end. One recording per tab: starting again restarts it.
+            url is where the frames go: an http:// or https:// address that takes a POST
+            of each JPEG (headers X-FoxMCP-Recording, X-FoxMCP-Frame from 0 and
+            X-FoxMCP-Time), or a ws:// or wss:// address that gets, per frame, a text
+            message {"recording", "frame", "time"} and then a binary message with the
+            JPEG. Only 127.0.0.1, localhost and [::1] are accepted. The receiver builds
+            whatever it wants from the frames (a GIF, a video). The first frame is sent
+            before this returns, so a receiver that is not there is an error now. One
+            recording per tab: starting again replaces the earlier one. It is dropped
+            when the tab closes or the connection to the server ends.
 
             Args:
                 tab_id: ID of the tab to record (it may be in the background)
-                interval_ms: Milliseconds between frames (default: 500, from 100 to 5000)
-                max_frames: Most frames to keep (default: 60, maximum: 300)
-                scale: Image scale, which sets the size of the GIF (default: 0.5)
-                quality: JPEG quality of each frame (default: 50)
+                url: Local address of the receiver, such as http://127.0.0.1:8099/frames
+                interval_ms: (optional, an integer from 100 to 5000, default: 500)
+                    Milliseconds between frames
+                max_frames: (optional, an integer from 1 to 300, default: 60) Most frames
+                    to send
+                scale: (optional, a finite number above 0 and at most 1, default: 0.5)
+                    Image scale
+                quality: (optional, an integer from 1 to 100, default: 50) JPEG quality
+                    of each frame
             """
+            if not isinstance(url, str) or not url.strip():
+                return "Failed to start recording: url must be a nonempty string"
+            try:
+                parts = urlsplit(url)
+                host = parts.hostname
+                parts.port  # raises ValueError for a bad port
+            except ValueError:
+                return "Failed to start recording: url must be a valid URL"
+            failed = "Failed to start recording: "
+            if parts.scheme not in ("http", "https", "ws", "wss"):
+                return failed + "url must start with http://, https://, ws:// or wss://"
+            if host not in ("127.0.0.1", "localhost", "::1"):
+                return failed + "url must point to this machine: 127.0.0.1, localhost or [::1]"
+            if parts.username or parts.password:
+                return failed + "url must not carry credentials"
+            for name, value, low, high in (("interval_ms", interval_ms, 100, 5000),
+                                           ("max_frames", max_frames, 1, 300),
+                                           ("quality", quality, 1, 100)):
+                if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                    return f"{failed}{name} must be an integer from {low} to {high}"
+            if (isinstance(scale, bool) or not isinstance(scale, (int, float))
+                    or not math.isfinite(scale) or not 0 < scale <= 1):
+                return failed + "scale must be a finite number above 0 and at most 1"
             data, error = await tab_request(profile_id, {
                 "action": "tabs.record_start",
-                "data": {"tabId": tab_id, "intervalMs": interval_ms, "maxFrames": max_frames,
-                         "scale": scale, "quality": quality}})
+                "data": {"tabId": tab_id, "url": url, "intervalMs": interval_ms,
+                         "maxFrames": max_frames, "scale": scale, "quality": quality}})
             if error:
                 return f"Failed to start recording: {error}"
-            return (f"Recording tab {tab_id} as {data.get('recordingId')}: a frame every "
-                    f"{data.get('intervalMs')} ms, up to {data.get('maxFrames')} frames")
+            return (f"Recording tab {tab_id} as {data.get('recordingId')} to "
+                    f"{data.get('url')}: a frame every {data.get('intervalMs')} ms, "
+                    f"up to {data.get('maxFrames')} frames")
 
         @self._tool()
-        async def tabs_record_stop(profile_id: int, recording_id: str, filename: str) -> str:
-            """Stop a recording and save it as an animated GIF
-
-            Identical frames in a row are merged, so a still page stays small. Without
-            the Pillow package installed, the frames are saved as numbered JPEG files
-            in a folder instead.
+        async def tabs_record_stop(profile_id: int, recording_id: str) -> str:
+            """Stop a recording and report how many frames reached the receiver
 
             Args:
                 recording_id: ID returned by tabs_record_start
-                filename: Path of the GIF to write (".gif" is added when missing)
             """
-            stopped, error = await tab_request(profile_id, {
+            data, error = await tab_request(profile_id, {
                 "action": "tabs.record_stop", "data": {"recordingId": recording_id}})
             if error:
                 return f"Failed to stop recording: {error}"
-            frames = []
-            for index in range(stopped.get("frames", 0)):
-                frame, error = await tab_request(profile_id, {
-                    "action": "tabs.record_frame",
-                    "data": {"recordingId": recording_id, "index": index}})
-                if error:
-                    return f"Failed to read frame {index}: {error}"
-                prefix = "data:image/jpeg;base64,"
-                url = frame.get("dataUrl", "")
-                if not url.startswith(prefix):
-                    return f"Failed to read frame {index}: unexpected image format"
-                frames.append((base64.b64decode(url[len(prefix):]), frame.get("delayMs", 500)))
-            await tab_request(profile_id, {
-                "action": "tabs.record_discard", "data": {"recordingId": recording_id}})
-            if not frames:
-                return "The recording has no frames" + (
-                    f" ({stopped['error']})" if stopped.get("error") else "")
-            try:
-                saved = await asyncio.to_thread(assemble_recording, frames, filename)
-            except (OSError, ValueError) as problem:
-                return f"Failed to save the recording: {problem}"
-            return saved + (f"; the recording ended early: {stopped['error']}" if stopped.get("error") else "")
+            text = (f"Recording {recording_id} stopped: {data.get('frames', 0)} frame(s) sent "
+                    f"in {data.get('durationMs', 0)} ms")
+            if data.get("skipped"):
+                text += f", {data['skipped']} skipped because the receiver was slow"
+            if data.get("error"):
+                text += f"; it ended early: {data['error']}"
+            return text
 
     def _setup_history_tools(self):
         """Setup history management tools"""

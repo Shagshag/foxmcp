@@ -118,7 +118,7 @@ Protocol ID remains 3. Compared with released v1.7.0, every change adds a
 request (`content.snapshot`, `click`, `type`, `press_key`, `hover`, `drag`,
 `scroll`, `select_option`, `fill_form`, `wait`, `console`, `dialogs`,
 `list_downloads`, `wait_download`, `upload_*`, `capture_file_input`,
-`tabs.record_start`, `record_stop`, `record_frame`, `record_discard`) or adds
+`tabs.record_start`, `record_stop`) or adds
 optional parameters (`rect`, `scale`, `ref`, `selector` and `padding` on the two
 capture actions). Existing parameters, defaults, responses and errors keep their
 meaning, and `requests_list_captured` filters on the server only. An extension
@@ -728,24 +728,41 @@ pixels, becomes the region. A cropped request without a `scale` is captured at s
 that does not exist or cannot be captured is a `CAPTURE_ERROR`.
 
 #### Record a Tab
-A recording is a series of JPEG captures of one tab, kept in the extension; no encoder
-runs in the browser. The server fetches the frames one request at a time and builds the
-GIF, so no message carries more than one frame.
+A recording sends small JPEG captures of one tab to a receiver on this machine as they are taken,
+and keeps none of them. The receiver is a web server or a websocket the client runs; the extension
+sends only to `127.0.0.1`, `localhost` or `[::1]`, and refuses any other address.
 
 ```json
-{"action": "tabs.record_start", "data": {"tabId": 123, "intervalMs": 500, "maxFrames": 60, "scale": 0.5, "quality": 50}}
+{"action": "tabs.record_start", "data": {"tabId": 123, "url": "http://127.0.0.1:8099/", "intervalMs": 500, "maxFrames": 60, "scale": 0.5, "quality": 50}}
 {"action": "tabs.record_stop", "data": {"recordingId": "rec-123"}}
-{"action": "tabs.record_frame", "data": {"recordingId": "rec-123", "index": 0}}
-{"action": "tabs.record_discard", "data": {"recordingId": "rec-123"}}
 ```
 
-`tabs.record_start` answers `{"recordingId", "intervalMs", "maxFrames"}` after the first
-frame is taken (a tab that cannot be captured is a `CAPTURE_ERROR`). `intervalMs` is
-limited to 100-5000 and `maxFrames` to 1-300; capturing stops at that count. There is one
-recording per tab, and starting again replaces it. `tabs.record_stop` answers
-`{"frames", "intervalMs", "durationMs", "error"}`, `tabs.record_frame` answers
-`{"dataUrl", "delayMs"}` with the time since the previous frame, and an unknown recording
-or frame is `RECORDING_NOT_FOUND`.
+`tabs.record_start` answers `{"recordingId", "url", "intervalMs", "maxFrames"}` after the first
+frame has been delivered, so a receiver that is not there, or that refuses the frame, is an
+`API_ERROR`. All six fields are required: `url` must start with `http://`, `https://`, `ws://` or
+`wss://`, point to this machine and carry no credentials, `intervalMs` is an integer from 100 to
+5000, `maxFrames` from 1 to 300, `quality` from 1 to 100 and `scale` a finite number above 0 and at
+most 1, otherwise the answer is an `INVALID_PARAMETER` error. There is one recording per tab, and
+starting again replaces it. Capturing stops by itself at `maxFrames`. A recording is dropped when
+its tab closes or the connection to the server ends.
+
+Over HTTP every frame is a `POST` of the JPEG (`Content-Type: image/jpeg`) with the headers
+`X-FoxMCP-Recording`, `X-FoxMCP-Frame` (from 0) and `X-FoxMCP-Time` (an ISO time); any 2xx
+status is accepted. The request carries no cookies, redirects are not followed (a 3xx answer ends
+the recording as an error), and a frame that is not answered within 10 seconds fails. Over a
+websocket every frame is a text message `{"recording": "rec-123", "frame": 0, "time": "..."}`
+followed by a binary message with the JPEG, and the socket is closed after the last frame.
+A frame that is still on its way when the next one is due makes the extension skip that one, and so
+does a websocket that still has data waiting to be sent; both count in `skipped`. A failed send (a
+status other than 2xx, a refused redirect, a timeout, a closed websocket) ends the recording.
+`tabs.record_start` answers `API_ERROR` if another start on the same tab replaces the recording, or
+its tab closes, before the first frame has been delivered.
+
+`tabs.record_stop` answers `{"frames", "skipped", "durationMs", "error"}`: the frames delivered,
+the ticks skipped because the receiver was slow, how long the recording ran and why it ended early,
+or `null`. An unknown recording is `RECORDING_NOT_FOUND`. A recording that ends by itself (at
+`maxFrames`, or after an error) stays until `tabs.record_stop` reports it and removes it, its tab
+closes or the connection ends.
 
 ### 3. Tab Content
 
@@ -1863,6 +1880,7 @@ request-error envelope.
 | `PAGE_ERROR` | The content script reported an error for an action on the page; the message describes it. |
 | `WAIT_TIMEOUT` | A wait ended before it finished: no download completed, or the script never returned a value; the message says how long it waited and why. |
 | `UPLOAD_ERROR` | A file upload referenced an unknown upload ID. |
+| `RECORDING_NOT_FOUND` | No screen recording exists with the supplied ID. |
 
 ### Script execution and consent errors
 
