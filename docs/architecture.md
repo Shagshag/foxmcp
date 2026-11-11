@@ -180,7 +180,7 @@ routing keys. See the [handshake](protocol.md#profile-connections-protocol-id-3)
 
 #### MCP Tools (`mcp_tools.py`)
 
-FastMCP exposes 46 tools by default. `profiles_list` and
+FastMCP exposes 63 tools by default. `profiles_list` and
 `debug_websocket_status` are untargeted; every browser tool requires a positive
 integer `profile_id`. `_send(profile_id, request)` adds routing metadata before forwarding
 to the registry. Native tab/window/group/container/monitor IDs are meaningful

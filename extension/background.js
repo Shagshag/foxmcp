@@ -966,7 +966,6 @@ async function cropToElement(tabId, data) {
   return { ...data, scale, rect: { x: left, y: top, width: right - left, height: bottom - top } };
 }
 
-// Screen recordings in progress or waiting to be fetched, by recording ID
 // Screen recordings in progress, by recording ID. A recording sends small JPEG captures of one
 // tab to a receiver on this machine as it goes and keeps no frames, so nothing grows with its length.
 const recordings = new Map();
