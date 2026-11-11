@@ -828,6 +828,23 @@ dialogs opened before the call or by `beforeunload`; `accepted` is not meaningfu
 ```
 
 It answers `{"mode": "accept", "dialogs": [{"type": "confirm", "message": "...", "accepted": true}]}`.
+#### Downloads
+`content.list_downloads` and `content.wait_download` use the `downloads` permission
+to report files the browser saved, so a client can tell whether an export worked.
+
+```json
+{"action": "content.list_downloads", "data": {"limit": 10}}
+{"action": "content.wait_download", "data": {"timeoutMs": 30000}}
+```
+
+They answer `{"downloads": [...]}` and `{"download": {...}}`, where each item has `id`,
+`filename` (the absolute saved path), `url`, `state`, `bytes` (the file size, or the bytes
+received so far when it is unknown), `mime`, `startTime` and `error`. Downloads made in
+private browsing are left out. `limit` must be an integer from 1 to 100 and `timeoutMs` an
+integer from 1 to 300000, otherwise the answer is an `INVALID_PARAMETER` error.
+`content.wait_download` considers the downloads that started up to 3 seconds before the
+request: it waits while any of them is in progress and then answers the newest, finished or
+interrupted (with its `error`), or `WAIT_TIMEOUT`.
 
 #### Execute Script
 **Request:**
@@ -984,24 +1001,6 @@ pixels (default 0.8 screens). It answers the new `x` and `y` and the largest `y`
 visible text, and errors with the available options when none matches.
 `content.fill_form` types into inputs and textareas, picks the option of a select,
 and sets a checkbox or radio to `true` or `false`; it answers `{"filled": [...]}`.
-
-#### Dialogs and Downloads
-A native `alert`, `confirm` or `prompt` blocks a page and cannot be answered from an
-extension, so `content.dialogs` replaces the page's own functions. `mode` is `accept`,
-`dismiss` or `off` (restore); any other value only reads the log. The answer lists the
-dialogs shown since the last call and is discarded when the page navigates.
-
-```json
-{"action": "content.dialogs", "data": {"tabId": 123, "mode": "accept", "promptText": null}}
-{"action": "content.list_downloads", "data": {"limit": 10}}
-{"action": "content.wait_download", "data": {"timeoutMs": 30000}}
-```
-
-`content.dialogs` answers `{"mode": "accept", "dialogs": [{"type": "confirm", "message": "...", "accepted": true}]}`.
-The two download requests use the `downloads` permission and answer `{"downloads": [...]}`
-and `{"download": {...}}` where each item has `id`, `filename` (the saved path), `url`, `state`,
-`bytes`, `mime`, `startTime` and `error`. `content.wait_download` answers a download that
-started up to 3 seconds before the request and has ended, or `WAIT_TIMEOUT`.
 
 #### Wait
 `content.wait` polls the tab until it has finished loading and, when given, the
@@ -1857,6 +1856,7 @@ request-error envelope.
 | `MONITOR_NOT_FOUND` | No request monitor exists with the supplied ID. |
 | `REQUEST_NOT_FOUND` | No captured request exists with the supplied ID. |
 | `PAGE_ERROR` | The content script reported an error for an action on the page; the message describes it. |
+| `WAIT_TIMEOUT` | A wait ended before any download finished; the message says how long it waited. |
 
 ### Script execution and consent errors
 
