@@ -52,6 +52,15 @@ validate the report. See [Finding Firefox](#finding-firefox).
 Keep commit-specific counts, durations and validation results in CI reports or
 dated validation records. This guide describes how to test the current checkout.
 
+#### Monitor option isolation
+
+`unit/test_monitor_option_validation.py` uses actual MCP calls to verify strict
+nested types, unknown-field rejection and no browser calls on invalid options.
+`integration/test_monitor_options_end_to_end.py` drives a local page in Firefox
+through MCP, checking overlapping monitors with different byte/type policies,
+disabled request/response capture, complete page delivery, raw-protocol
+validation, monitor membership and reads after stop.
+
 #### Startup composition coverage
 
 `unit/test_server_composition.py` checks the source roles documented in the
@@ -210,7 +219,7 @@ FIREFOX_PATH=/path/to/firefox venv/bin/python \
   tests/package_smoke.py --packages dist/packages
 ```
 
-Each transport exercises every advertised tool, with read-back checks for:
+Each transport runs the existing tool scenarios, with read-back checks for:
 
 - Windows: create, list, inspect, focus, resize and close.
 - Tabs: create, list, switch, move, group, update/query groups, ungroup and close.
@@ -221,7 +230,14 @@ Each transport exercises every advertised tool, with read-back checks for:
 - Requests: start capture, fetch local JSON, verify captured status/body and stop.
 - Debug connection status, plus local-file loading and the installed upload helper.
 
-A new tool without a smoke scenario fails the advertised-tool coverage check.
+A new tool without a smoke scenario is listed in the report's `uncovered_tools`.
+Ordinary PR/push CI reports this gap while continuing to require all existing
+scenarios to pass. Release rehearsals and tags enforce full advertised-tool
+coverage and fixed tool totals. Direct local runs enforce these gates by default;
+set `FOXMCP_RELEASE_CHECKS=0` to match ordinary CI. The same mode controls fixed
+totals in source, Windows, wheel/sdist and shared-stdio container checks. See
+[CI policy](../docs/development.md#continuous-integration).
+
 Each mode starts its own test browser after the server is ready, avoiding the
 finite reconnect budget in the test profile. Only disposable profile data and
 local fixture pages are used. Windows, bookmarks, monitors and tabs are cleaned up.
