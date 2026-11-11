@@ -719,15 +719,36 @@ answers `UNKNOWN_ACTION`.
 }
 ```
 
-Both capture actions accept an optional `rect` (`{"x", "y", "width", "height"}`) to capture only a
-region and an optional `scale` (positive number) for the image size. The rect is in CSS pixels
-from the top-left of the document, not of the visible area, so scrolling does not change it.
-Instead of `rect` they accept a `ref` or `selector` (and `padding`, default 8): the element is
-scrolled into view and its rectangle, in document coordinates and rounded outwards to whole
-pixels, becomes the region. A cropped request without a `scale` is captured at scale 1.
+Both capture actions accept an optional `rect` (`{"x", "y", "width", "height"}`) to capture
+only a region and an optional `scale` (a finite number above 0 and at most 4) for the image size.
+The rect is in CSS pixels from the top-left of the document, not of the visible area, so the
+scroll position does not change what it selects:
+
+```json
+{"action": "tabs.captureVisibleTab", "data": {"format": "png", "quality": 90, "rect": {"x": 0, "y": 0, "width": 400, "height": 200}, "scale": 0.5}}
+{"action": "tabs.captureTab", "data": {"tabId": 123, "format": "png", "quality": 90, "rect": {"x": 0, "y": 0, "width": 400, "height": 200}, "scale": 0.5}}
+```
+
+Instead of `rect` they accept a `ref` or `selector` and an optional `padding` (a finite number of
+0 or more, default 8): the element is scrolled into view and its rectangle, in document
+coordinates (iframes included) and rounded outwards to whole pixels, becomes the region, so the
+same rules apply to the resulting `rect` and `scale`. An extension without this change ignores
+`ref`, `selector` and `padding`.
+
+`x`, `y`, `width` and `height` must be integers, `x` and `y` at least 0 and `width` and `height`
+above 0. A `rect` or `scale` that breaks these rules is an `INVALID_PARAMETER` error, not a
+full-size capture. The image is the region (or the visible area) in CSS pixels times `scale`,
+whatever the display: a `rect` (or an element, see below) with no `scale` is captured at
+`scale` 1 (Firefox itself would use
+the device pixel ratio), and a request with neither is left to Firefox as before. An extension
+older than this change ignores both fields and returns the whole image, so a client that needs the
+region should check the extension version.
 
 `tabId` must be a non-negative integer (`INVALID_PARAMETER` otherwise). A tab
-that does not exist or cannot be captured is a `CAPTURE_ERROR`.
+that does not exist or cannot be captured is a `CAPTURE_ERROR`. So is an image whose data URL is
+longer than 1,000,000 characters: the server accepts one message of 1 MiB from the extension and
+closes the connection on a larger one (see Known Limits in `architecture.md`), so the extension
+refuses to send it and the message says to use jpeg, a lower quality or scale, or a smaller region.
 
 #### Record a Tab
 A recording sends small JPEG captures of one tab to a receiver on this machine as they are taken,
@@ -1881,7 +1902,7 @@ request-error envelope.
 | `UNKNOWN_ACTION` | The action namespace or operation is unsupported. |
 | `INVALID_PARAMETER` | An action field is missing or has an invalid type/value. |
 | `UNSUPPORTED_API` | This Firefox lacks the API or permission required for the action. |
-| `CAPTURE_ERROR` | The screenshot API rejected capture of the visible or specified tab. |
+| `CAPTURE_ERROR` | The screenshot API rejected capture of the visible or specified tab, or the image is too large for the connection. |
 | `WINDOW_NOT_FOUND` | Firefox rejected a window ID as invalid. |
 | `INVALID_WINDOW_STATE` | Firefox rejected a requested window state. |
 | `INVALID_WINDOW_TYPE` | Firefox rejected a requested window type. |

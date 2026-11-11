@@ -1500,10 +1500,10 @@ class FoxMCPTools:
             format: str = "png",
             quality: int = 90,
             tab_id: Optional[int] = None,
-            x: Optional[float] = None,
-            y: Optional[float] = None,
-            width: Optional[float] = None,
-            height: Optional[float] = None,
+            x: Optional[int] = None,
+            y: Optional[int] = None,
+            width: Optional[int] = None,
+            height: Optional[int] = None,
             scale: Optional[float] = None,
             ref: Optional[str] = None,
             selector: Optional[str] = None,
@@ -1511,12 +1511,17 @@ class FoxMCPTools:
         ) -> str:
             """Capture a screenshot of the visible tab, or of the tab given by tab_id
 
-            To save tokens, capture only a region (x, y, width, height; all four together), or
-            just one element (ref from content_snapshot, or a CSS selector), and/or shrink the
-            image with scale (e.g. 0.5). A region is in CSS pixels from the top-left of the whole
-            page, not of what is visible, so scrolling does not change it. An element is scrolled
-            into view and captured with its padding. A cropped image has the size of the crop in
-            CSS pixels times scale (1 by default), whatever the display.
+            To save tokens, capture only a region (x, y, width, height; all four together),
+            or just one element (ref from content_snapshot, or a CSS selector), and/or shrink
+            the image with scale (e.g. 0.5). A region is in CSS pixels from the top-left of
+            the whole page, not of what is visible, so scrolling does not change it. An
+            element is scrolled into view and captured with its padding. The image has the
+            size of the region or element (or of the visible area) in CSS pixels times scale:
+            with a region or an element and no scale it is that size on any display (400 x 200
+            gives 400 x 200 pixels), and scale 2 gives 800 x 400. Without a crop and without
+            scale the image keeps the display pixel density. An image over about 1 MB as a
+            data URL is refused (the connection carries at most 1 MiB per message): use jpeg,
+            a lower quality or scale, or a smaller region.
 
             What comes back depends on whether you pass a filename: with one, the image is
             written to disk and you get a success message and the path; without one, you get
@@ -1528,13 +1533,21 @@ class FoxMCPTools:
                 format: Image format ('png' or 'jpeg', default: 'png')
                 quality: Image quality for JPEG format (1-100, default: 90)
                 tab_id: Capture this tab, even in the background (not with window_id)
-                x, y, width, height: Region to capture, in CSS pixels from the top-left of the
-                    whole page (all four or none)
-                scale: Scale factor for the image (default: 1 for a region or an element; for
-                    a whole screenshot, the display pixel density; e.g. 0.5 for half size)
-                ref: Capture only this element (ref from content_snapshot); it is scrolled into view
-                selector: Capture only the element this CSS selector matches (when no ref is given)
-                padding: Margin around the element in pixels (default: 8)
+                x: Left edge of the region to capture (optional, integer CSS pixels from the left of
+                    the page, 0 or more; give x, y, width and height together)
+                y: Top edge of the region (optional, integer CSS pixels from the top of the
+                    page, 0 or more)
+                width: Width of the region (optional, integer CSS pixels, more than 0)
+                height: Height of the region (optional, integer CSS pixels, more than 0)
+                scale: Output pixels per CSS pixel (optional, a finite number above 0 and up to 4,
+                    for example 0.5 for half size or 2 for a sharper image; default: 1 with a
+                    region or an element, the display pixel density without one)
+                ref: Capture only this element (optional, ref from content_snapshot); it is
+                    scrolled into view
+                selector: Capture only the element this CSS selector matches (optional, used
+                    when no ref is given)
+                padding: Margin around the element in pixels (optional, a finite number of 0 or
+                    more; default: 8)
 
             Returns:
                 Success message with file path if filename provided, otherwise base64 encoded image data URL
@@ -1551,17 +1564,27 @@ class FoxMCPTools:
                 region["ref"] = ref
                 region["selector"] = selector
                 if padding is not None:
+                    if (isinstance(padding, bool) or not isinstance(padding, (int, float))
+                            or not math.isfinite(padding) or padding < 0):
+                        return "Error capturing screenshot: padding must be a number of 0 or more"
                     region["padding"] = padding
             if any(v is not None for v in (x, y, width, height)):
                 if None in (x, y, width, height):
                     return "Error capturing screenshot: pass x, y, width and height together"
+                if not all(isinstance(v, int) and not isinstance(v, bool)
+                           for v in (x, y, width, height)):
+                    return "Error capturing screenshot: x, y, width and height must be integers"
+                if x < 0 or y < 0:
+                    return "Error capturing screenshot: x and y must not be negative"
                 if width <= 0 or height <= 0:
                     return "Error capturing screenshot: width and height must be positive"
                 region["rect"] = {"x": x, "y": y, "width": width, "height": height}
             if scale is not None:
-                if scale <= 0:
-                    return "Error capturing screenshot: scale must be positive"
-                region["scale"] = scale
+                if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+                    return "Error capturing screenshot: scale must be a number"
+                if not math.isfinite(scale) or not 0 < scale <= 4:
+                    return "Error capturing screenshot: scale must be above 0 and at most 4"
+                region["scale"] = float(scale)
 
             if tab_id is not None:
                 request = {

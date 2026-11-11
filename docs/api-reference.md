@@ -85,13 +85,6 @@ does not rely on an extension-supplied name or a user-entered label.
 - `tabs_groups_update(profile_id, group_id, title=None, color=None, collapsed=None)` - Change a group's title, colour or collapsed state
 - `tabs_groups_query(profile_id, window_id=None, title=None, color=None, collapsed=None)` - List tab groups and their IDs
 - `tabs_capture_screenshot(profile_id, filename=None, window_id=None, format="png", quality=90, tab_id=None, x=None, y=None, width=None, height=None, scale=None, ref=None, selector=None, padding=None)` - Capture screenshot of the visible tab, or of one given tab
-  - `ref` or `selector` (not with a region) captures just that element, scrolled into view, with
-    `padding` pixels around it (default 8)
-  - `x`, `y`, `width`, `height` (all four together, CSS pixels from the top-left of the whole page,
-    not of what is visible, so scrolling does not change the region) capture only that region, and
-    `scale` (e.g. `0.5`) shrinks the image; both reduce the size of the result
-  - A cropped image (a region, or an element by `ref` or `selector`) has the size of the crop in
-    CSS pixels times `scale`, which is 1 by default, whatever the display
   - If `filename` provided: saves screenshot to file and returns success message
   - If `filename` omitted: returns base64 encoded image data URL
   - Automatically adds file extension (.png/.jpeg) if not provided
@@ -99,6 +92,20 @@ does not rely on an extension-supplied name or a user-entered label.
   - With `tab_id`, that tab is captured wherever it is: a background tab, or one in a window that is
     not in front, and nothing is switched. Not together with `window_id`. Needs an extension that
     has `tabs.captureTab`; an older one answers that it is too old
+  - `ref` or `selector` (not with a region) captures just that element, scrolled into view, with
+    `padding` pixels around it (optional, a finite number of 0 or more; default 8); the image is
+    captured at `scale` 1 unless a `scale` is given, like a region
+  - `x`, `y`, `width`, `height` (optional, all four together, integer CSS pixels from the top-left
+    of the whole page, not of what is visible, so scrolling does not change the region; `x` and `y`
+    at least 0, `width` and `height` above 0) capture only that region
+  - `scale` (optional, a finite number above 0 and at most 4) is the number of output pixels per
+    CSS pixel: `0.5` halves the image and `2` gives a sharper one. The image is the region (or the
+    visible area) in CSS pixels times `scale`, whatever the display: a region or an element with no `scale` is
+    captured at `scale` 1, so `400 x 200` gives `400 x 200` pixels, while a request with neither a
+    region nor a `scale` keeps the display pixel density, as before
+  - An image whose data URL is over 1,000,000 characters is refused with a `CAPTURE_ERROR` that says
+    to use `jpeg`, a lower `quality` or `scale`, or a smaller region: the connection to the server
+    carries at most 1 MiB per message. A large region with a high `scale` can reach that
 - `tabs_record_start(profile_id, tab_id, url, interval_ms=500, max_frames=60, scale=0.5, quality=50)` - Record a tab by sending small JPEG screenshots to a receiver on this machine that you run. `url` is an `http://` or `https://` address that takes a POST of each frame, or a `ws://` or `wss://` address that gets a text message and then a binary message per frame (see [receiving frames](#receiving-recording-frames)); only `127.0.0.1`, `localhost` and `[::1]` are accepted. `interval_ms` is an integer from 100 to 5000, `max_frames` from 1 to 300 (it stops there), `scale` a number above 0 and at most 1, `quality` an integer from 1 to 100. The first frame is sent before the call returns, so a receiver that is not there is an error. Starting again on the same tab replaces the earlier recording, and it is dropped when the tab closes or the connection ends
 - `tabs_record_stop(profile_id, recording_id)` - Stop a recording and report how many frames reached the receiver, how many were skipped because it was slow, and why it ended early, if it did
 

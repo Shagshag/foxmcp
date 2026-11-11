@@ -978,17 +978,36 @@ function stopRecordingTimer(recording) {
   }
 }
 
-// Optional crop (rect, in CSS pixels of the page) and scale for a screenshot,
-// so a request can ask for a small part of the page instead of all of it.
+// Optional crop (rect) and scale for a screenshot, so a request can ask for a small part of the
+// page instead of all of it. The rect is in CSS pixels from the top-left of the document, not of
+// the visible area, so the scroll position does not change what it selects.
+//
+// The output is the region in CSS pixels times the scale, whatever the display: Firefox's own
+// default scale is the device pixel ratio, so a cropped request that gives no scale gets 1. A
+// request with neither a rect nor a scale is left to Firefox, as before.
+//
+// A malformed rect or scale is an error, not a full-size screenshot: the caller
+// asked for something smaller and would otherwise not notice it did not get it.
 function captureRegionOptions(data) {
   const result = {};
-  const rect = data.rect;
-  if (rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)
-      && rect.width > 0 && rect.height > 0) {
+  if (data.rect !== undefined && data.rect !== null) {
+    const rect = data.rect;
+    if (typeof rect !== 'object' ||
+        ![rect.x, rect.y, rect.width, rect.height].every(Number.isInteger)) {
+      throw new Error('rect needs integer x, y, width and height');
+    }
+    if (rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0) {
+      throw new Error('rect needs x and y of 0 or more, and width and height above 0');
+    }
     result.rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   }
-  if (Number.isFinite(data.scale) && data.scale > 0) {
+  if (data.scale !== undefined && data.scale !== null) {
+    if (!Number.isFinite(data.scale) || data.scale <= 0 || data.scale > 4) {
+      throw new Error('scale needs a finite number above 0 and at most 4');
+    }
     result.scale = data.scale;
+  } else if (result.rect) {
+    result.scale = 1;
   }
   return result;
 }
@@ -1141,6 +1160,20 @@ browser.tabs.onRemoved.addListener(tabId => {
   closeRecording(recordings.get(`rec-${tabId}`));
   recordings.delete(`rec-${tabId}`);
 });
+
+// The server accepts one message of at most 1 MiB from the extension (see Known Limits in
+// docs/architecture.md) and closes the connection on a larger one, which would drop the whole
+// profile. A screenshot that large is refused here with a message that says how to shrink it.
+const MAX_SCREENSHOT_DATA_URL_LENGTH = 1000000;
+
+function screenshotTooLarge(dataUrl) {
+  if (dataUrl.length <= MAX_SCREENSHOT_DATA_URL_LENGTH) {
+    return null;
+  }
+  return `The screenshot is ${dataUrl.length} characters as a data URL, over the `
+    + `${MAX_SCREENSHOT_DATA_URL_LENGTH} the connection to the server can carry; use jpeg, a lower `
+    + 'quality or scale, or a smaller region';
+}
 
 // The tab group properties a request sets, out of title, color and collapsed
 //
@@ -1463,10 +1496,17 @@ async function handleTabsAction(id, action, data) {
 
       case 'tabs.captureVisibleTab':
         const windowId = data.windowId || null;
+        let visibleRegion;
+        try {
+          visibleRegion = captureRegionOptions(data);
+        } catch (regionError) {
+          sendError(id, 'INVALID_PARAMETER', regionError.message);
+          break;
+        }
         const options = {
           format: data.format || 'png',
           quality: data.quality || 90,
-          ...captureRegionOptions(data)
+          ...visibleRegion
         };
 
         // The agent overlay sits on top of the page in the tab being captured;
@@ -1485,6 +1525,11 @@ async function handleTabsAction(id, action, data) {
           await setOverlay(false);
           const dataUrl = await browser.tabs.captureVisibleTab(windowId, options)
             .finally(() => setOverlay(true));
+          const visibleTooLarge = screenshotTooLarge(dataUrl);
+          if (visibleTooLarge) {
+            sendError(id, 'CAPTURE_ERROR', visibleTooLarge);
+            break;
+          }
           sendResponse(id, action, {
             dataUrl: dataUrl,
             format: options.format,
@@ -1596,10 +1641,17 @@ async function handleTabsAction(id, action, data) {
           sendError(id, 'INVALID_PARAMETER', 'tabs.captureTab needs a non-negative integer tabId');
           break;
         }
+        let tabRegion;
+        try {
+          tabRegion = captureRegionOptions(data);
+        } catch (regionError) {
+          sendError(id, 'INVALID_PARAMETER', regionError.message);
+          break;
+        }
         const captureOptions = {
           format: data.format || 'png',
           quality: data.quality || 90,
-          ...captureRegionOptions(data)
+          ...tabRegion
         };
 
         // As for captureVisibleTab, keep the agent overlay out of the image.
@@ -1611,6 +1663,11 @@ async function handleTabsAction(id, action, data) {
           await setTabOverlay(false);
           const dataUrl = await browser.tabs.captureTab(captureTabId, captureOptions)
             .finally(() => setTabOverlay(true));
+          const tabTooLarge = screenshotTooLarge(dataUrl);
+          if (tabTooLarge) {
+            sendError(id, 'CAPTURE_ERROR', tabTooLarge);
+            break;
+          }
           sendResponse(id, action, {
             dataUrl: dataUrl,
             format: captureOptions.format,
