@@ -717,10 +717,12 @@ answers `UNKNOWN_ACTION`.
 }
 ```
 
-Both capture actions accept an optional `rect` (`{"x", "y", "width", "height"}`, CSS pixels) to
-capture only a region and an optional `scale` (positive number) for the image size.
-Instead of `rect` they accept a `ref` or `selector` (and `padding`, default 8): the
-element is scrolled into view and its rectangle becomes the region.
+Both capture actions accept an optional `rect` (`{"x", "y", "width", "height"}`) to capture only a
+region and an optional `scale` (positive number) for the image size. The rect is in CSS pixels
+from the top-left of the document, not of the visible area, so scrolling does not change it.
+Instead of `rect` they accept a `ref` or `selector` (and `padding`, default 8): the element is
+scrolled into view and its rectangle, in document coordinates and rounded outwards to whole
+pixels, becomes the region. A cropped request without a `scale` is captured at scale 1.
 
 `tabId` must be a non-negative integer (`INVALID_PARAMETER` otherwise). A tab
 that does not exist or cannot be captured is a `CAPTURE_ERROR`.

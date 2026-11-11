@@ -939,7 +939,8 @@ function isBrowserId(value) {
 
 // A screenshot request that names an element (ref or selector) is cropped to
 // it, with a margin of `padding` pixels: the element is scrolled into view and
-// its rectangle becomes the request's rect.
+// its rectangle, in document coordinates and rounded outwards to whole pixels, becomes the
+// request's rect. Like any cropped request without a scale, it is captured at scale 1.
 async function cropToElement(tabId, data) {
   if (!data.ref && !data.selector) {
     return data;
@@ -957,9 +958,12 @@ async function cropToElement(tabId, data) {
   }
   // Let the scroll settle before the page is captured.
   await new Promise(resolve => setTimeout(resolve, 150));
-  const left = Math.max(x - pad, 0);
-  const top = Math.max(y - pad, 0);
-  return { ...data, rect: { x: left, y: top, width: width + (x - left) + pad, height: height + (y - top) + pad } };
+  const left = Math.max(Math.floor(x - pad), 0);
+  const top = Math.max(Math.floor(y - pad), 0);
+  const right = Math.ceil(x + width + pad);
+  const bottom = Math.ceil(y + height + pad);
+  const scale = Number.isFinite(data.scale) && data.scale > 0 ? data.scale : 1;
+  return { ...data, scale, rect: { x: left, y: top, width: right - left, height: bottom - top } };
 }
 
 // Screen recordings in progress or waiting to be fetched, by recording ID

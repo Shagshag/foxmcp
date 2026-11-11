@@ -725,12 +725,20 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       // Where an element is in the viewport, so a screenshot can be cropped to it.
+      // Where an element is in the document, so a screenshot can be cropped to it. A screenshot
+      // crop is in document coordinates, from the top-left of the whole page, while
+      // getBoundingClientRect is relative to the visible area, so the scroll position is added.
+      // The element is scrolled into view first so that a page that clips it in a scrolling
+      // container still draws it.
       case 'elementRect': {
         const el = findTarget(data);
         el.scrollIntoView({ block: 'center', inline: 'center' });
         const rect = el.getBoundingClientRect();
-        sendResponse({ rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
-                       described: describe(el) });
+        sendResponse({
+          rect: { x: rect.left + window.scrollX, y: rect.top + window.scrollY,
+                  width: rect.width, height: rect.height },
+          described: describe(el)
+        });
         break;
       }
 

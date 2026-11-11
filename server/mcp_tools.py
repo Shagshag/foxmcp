@@ -1532,9 +1532,12 @@ class FoxMCPTools:
         ) -> str:
             """Capture a screenshot of the visible tab, or of the tab given by tab_id
 
-            To save tokens, capture only a region (x, y, width, height, in CSS pixels from
-            the top-left of the visible page; all four together), or just one element (ref
-            from content_snapshot, or a CSS selector), and/or shrink it with scale (e.g. 0.5).
+            To save tokens, capture only a region (x, y, width, height; all four together), or
+            just one element (ref from content_snapshot, or a CSS selector), and/or shrink the
+            image with scale (e.g. 0.5). A region is in CSS pixels from the top-left of the whole
+            page, not of what is visible, so scrolling does not change it. An element is scrolled
+            into view and captured with its padding. A cropped image has the size of the crop in
+            CSS pixels times scale (1 by default), whatever the display.
 
             What comes back depends on whether you pass a filename: with one, the image is
             written to disk and you get a success message and the path; without one, you get
@@ -1546,8 +1549,10 @@ class FoxMCPTools:
                 format: Image format ('png' or 'jpeg', default: 'png')
                 quality: Image quality for JPEG format (1-100, default: 90)
                 tab_id: Capture this tab, even in the background (not with window_id)
-                x, y, width, height: Region to capture, in CSS pixels (all four or none)
-                scale: Scale factor for the image (default: 1; e.g. 0.5 for half size)
+                x, y, width, height: Region to capture, in CSS pixels from the top-left of the
+                    whole page (all four or none)
+                scale: Scale factor for the image (default: 1 for a region or an element; for
+                    a whole screenshot, the display pixel density; e.g. 0.5 for half size)
                 ref: Capture only this element (ref from content_snapshot); it is scrolled into view
                 selector: Capture only the element this CSS selector matches (when no ref is given)
                 padding: Margin around the element in pixels (default: 8)

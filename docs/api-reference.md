@@ -87,8 +87,11 @@ does not rely on an extension-supplied name or a user-entered label.
 - `tabs_capture_screenshot(profile_id, filename=None, window_id=None, format="png", quality=90, tab_id=None, x=None, y=None, width=None, height=None, scale=None, ref=None, selector=None, padding=None)` - Capture screenshot of the visible tab, or of one given tab
   - `ref` or `selector` (not with a region) captures just that element, scrolled into view, with
     `padding` pixels around it (default 8)
-  - `x`, `y`, `width`, `height` (all four together, CSS pixels) capture only that region, and
+  - `x`, `y`, `width`, `height` (all four together, CSS pixels from the top-left of the whole page,
+    not of what is visible, so scrolling does not change the region) capture only that region, and
     `scale` (e.g. `0.5`) shrinks the image; both reduce the size of the result
+  - A cropped image (a region, or an element by `ref` or `selector`) has the size of the crop in
+    CSS pixels times `scale`, which is 1 by default, whatever the display
   - If `filename` provided: saves screenshot to file and returns success message
   - If `filename` omitted: returns base64 encoded image data URL
   - Automatically adds file extension (.png/.jpeg) if not provided
