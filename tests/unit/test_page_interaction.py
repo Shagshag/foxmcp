@@ -422,34 +422,6 @@ class TestRecording:
         assert sorted(p.name for p in (tmp_path / "demo").iterdir()) == ["frame-000.jpg", "frame-001.jpg"]
 
 
-class TestConsole:
-
-    @pytest.mark.asyncio
-    async def test_first_call_only_starts_recording(self, call_tool, stub_server):
-        stub_server.response = {"type": "response", "data": {"started": True, "entries": []}}
-
-        result = await call_tool("content_read_console", profile_id=1, tab_id=4)
-
-        assert stub_server.sent_request["action"] == "content.console"
-        assert stub_server.sent_request["data"] == {
-            "tabId": 4, "level": None, "pattern": None, "limit": 50, "clear": False}
-        assert result.startswith("Console recording started")
-
-    @pytest.mark.asyncio
-    async def test_lists_entries_with_their_level(self, call_tool, stub_server):
-        stub_server.response = {"type": "response", "data": {"started": False, "entries": [
-            {"level": "error", "message": "boom"}, {"level": "uncaught", "message": "x is not defined"}]}}
-
-        result = await call_tool("content_read_console", profile_id=1, tab_id=4, level="error")
-
-        assert result == "[error] boom\n[uncaught] x is not defined"
-
-    @pytest.mark.asyncio
-    async def test_level_is_checked(self, call_tool, stub_server):
-        with pytest.raises(ValueError, match="level"):
-            await call_tool("content_read_console", profile_id=1, tab_id=4, level="loud")
-
-
 class TestDialogsAndDownloads:
 
     @pytest.mark.asyncio

@@ -1669,6 +1669,16 @@ async function handleContentAction(id, action, data) {
         break;
       }
 
+      case 'content.console': {
+        const consoleResult = await sendMessageWithRetry(data.tabId, { action: 'console', data });
+        if (consoleResult && consoleResult.error) {
+          sendError(id, 'PAGE_ERROR', consoleResult.error);
+        } else {
+          sendResponse(id, action, consoleResult);
+        }
+        break;
+      }
+
       case 'content.get_text':
         const textResult = await sendMessageWithRetry(data.tabId, {
           action: 'extractText'
@@ -1701,7 +1711,6 @@ async function handleContentAction(id, action, data) {
       case 'content.click':
       case 'content.type':
       case 'content.press_key':
-      case 'content.console':
       case 'content.dialogs':
       case 'content.hover':
       case 'content.drag':
@@ -1711,7 +1720,7 @@ async function handleContentAction(id, action, data) {
       case 'content.capture_file_input': {
         const pageAction = { 'content.snapshot': 'snapshot', 'content.click': 'click',
           'content.type': 'type', 'content.press_key': 'pressKey',
-          'content.console': 'console', 'content.dialogs': 'dialogs',
+          'content.dialogs': 'dialogs',
           'content.hover': 'hover', 'content.drag': 'drag', 'content.scroll': 'scroll',
           'content.select_option': 'selectOption', 'content.fill_form': 'fillForm',
           'content.capture_file_input': 'captureFileInput' }[action];
