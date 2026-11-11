@@ -813,6 +813,21 @@ substring of the message, `limit` (1 to 500) keeps the newest entries, and `clea
 whole buffer, not only the entries returned; it is ignored when `started` is true. A value of
 the wrong type or range is a `PAGE_ERROR`. Entries hold whatever the page logged, which can
 include secrets or personal data, and are returned unchanged.
+#### Dialogs
+A native `alert`, `confirm` or `prompt` blocks a page and cannot be answered from an
+extension, so `content.dialogs` replaces the page's own functions. `mode` is `accept` (OK),
+`dismiss` (Cancel) or `off` (restore the native dialogs); `log` changes nothing and only
+returns the log, so it lists dialogs only after accept or dismiss was on. Any other value is a
+`PAGE_ERROR`. `accept` answers OK to every `confirm`, including destructive ones. The answer
+lists the dialogs shown since the last call (the last 100 at most, each message cut to 1,000
+characters), and is discarded when the page navigates. Only the top frame is covered, and not
+dialogs opened before the call or by `beforeunload`; `accepted` is not meaningful for `alert`.
+
+```json
+{"action": "content.dialogs", "data": {"tabId": 123, "mode": "accept", "promptText": null}}
+```
+
+It answers `{"mode": "accept", "dialogs": [{"type": "confirm", "message": "...", "accepted": true}]}`.
 
 #### Execute Script
 **Request:**
@@ -969,18 +984,6 @@ pixels (default 0.8 screens). It answers the new `x` and `y` and the largest `y`
 visible text, and errors with the available options when none matches.
 `content.fill_form` types into inputs and textareas, picks the option of a select,
 and sets a checkbox or radio to `true` or `false`; it answers `{"filled": [...]}`.
-
-#### Console
-`content.console` returns what the page has logged since the first request, and
-uncaught errors and unhandled promise rejections (level `uncaught`, also returned for
-`level: "error"`). The first request on a page only starts recording, answering
-`{"started": true, "entries": []}`, because wrapping `console` everywhere from the
-start would change stack locations on pages nobody is debugging. At most 500 entries
-are kept.
-
-```json
-{"action": "content.console", "data": {"tabId": 123, "level": null, "pattern": null, "limit": 50, "clear": false}}
-```
 
 #### Dialogs and Downloads
 A native `alert`, `confirm` or `prompt` blocks a page and cannot be answered from an

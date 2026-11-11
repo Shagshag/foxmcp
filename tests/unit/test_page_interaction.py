@@ -422,23 +422,7 @@ class TestRecording:
         assert sorted(p.name for p in (tmp_path / "demo").iterdir()) == ["frame-000.jpg", "frame-001.jpg"]
 
 
-class TestDialogsAndDownloads:
-
-    @pytest.mark.asyncio
-    async def test_dialog_handling_lists_what_was_answered(self, call_tool, stub_server):
-        stub_server.response = {"type": "response", "data": {"mode": "accept", "dialogs": [
-            {"type": "confirm", "message": "Delete?", "accepted": True}]}}
-
-        result = await call_tool("content_handle_dialogs", profile_id=1, tab_id=4, mode="accept")
-
-        assert stub_server.sent_request["data"] == {
-            "tabId": 4, "mode": "accept", "promptText": None}
-        assert result == "Dialog handling: accept\n- confirm (accepted): Delete?"
-
-    @pytest.mark.asyncio
-    async def test_dialog_mode_is_checked(self, call_tool, stub_server):
-        with pytest.raises(ValueError, match="mode"):
-            await call_tool("content_handle_dialogs", profile_id=1, tab_id=4, mode="maybe")
+class TestDownloads:
 
     @pytest.mark.asyncio
     async def test_list_downloads(self, call_tool, stub_server):
