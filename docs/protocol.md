@@ -1857,6 +1857,7 @@ request-error envelope.
 | `REQUEST_NOT_FOUND` | No captured request exists with the supplied ID. |
 | `PAGE_ERROR` | The content script reported an error for an action on the page; the message describes it. |
 | `WAIT_TIMEOUT` | A wait ended before any download finished; the message says how long it waited. |
+| `UPLOAD_ERROR` | A file upload referenced an unknown upload ID. |
 
 ### Script execution and consent errors
 
