@@ -26,13 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Page interaction tools from pull requests 12 to 14: `content_snapshot`,
   `content_click`, `content_type`, `content_press_key`,
   `content_upload_files`, and an overlay with a moving cursor.
-- `content_wait`, `content_hover`, `content_drag`, `content_scroll`,
+- `content_wait` runs a script in the tab until it returns a value.
+- `content_hover`, `content_drag`, `content_scroll`,
   `content_select_option`, `content_fill_form`, `content_read_console`,
   `content_handle_dialogs`, `content_list_downloads` and
   `content_wait_download`. The extension asks for the `downloads` permission.
-- `tabs_capture_screenshot` captures a region, an element or a scaled image.
-- `requests_list_captured` filters by URL, method, type, status and failure.
-- `tabs_record_start` and `tabs_record_stop` record a tab and save an animated GIF (needs the optional `gif` extra, Pillow; otherwise numbered JPEG files).
+- `tabs_capture_screenshot` captures a region, an element or a scaled image,
+  and refuses an image the connection cannot carry.
+- `requests_start_monitoring` filters by method, type, status and failure;
+  `requests_list_captured` takes a `limit`.
+- `tabs_record_start` and `tabs_record_stop` send the frames of a tab to a
+  receiver on this machine (HTTP or websocket).
 - Snapshots show field labels, values and states, and list open shadow DOM
   and same-origin iframes.
 - Content requests load a discarded tab first.

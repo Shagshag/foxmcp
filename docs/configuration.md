@@ -304,7 +304,7 @@ never fall back to another connected profile.
 
 Every tool's description sits in an MCP client's context for the whole session,
 whether or not the tool is ever called. With no predefined scripts listed, the
-full set of 63 tools costs roughly 15,000 tokens. `--disable-tools` leaves a group unregistered, so a client never
+full set of 63 tools costs roughly 16,000 tokens. `--disable-tools` leaves a group unregistered, so a client never
 sees it:
 
 ```bash
@@ -319,13 +319,13 @@ token, so treat them as proportions rather than exact counts:
 | Group | Tools | ~Tokens |
 |---|---|---|
 | `profiles` | list | 202 |
-| `tabs` | list, create, close, switch, move, capture_screenshot, record_start, record_stop, group, ungroup, groups_update, groups_query | 3,664 |
+| `tabs` | list, create, close, switch, move, capture_screenshot, record_start, record_stop, group, ungroup, groups_update, groups_query | 4,102 |
 | `containers` | list, create, update, remove | 625 |
 | `bookmarks` | list, search, create, create_folder, update, move, delete | 1,438 |
 | `windows` | list, get, get_current, create, close, focus, update | 1,413 |
-| `requests` | start_monitoring, stop_monitoring, list_captured, get_content | 1,558 |
+| `requests` | start_monitoring, stop_monitoring, list_captured, get_content | 1,794 |
 | `navigation` | back, forward, reload, go_to_url | 668 |
-| `content` | get_text, get_html, execute_script, execute_predefined, load_file, snapshot, wait, click, type, press_key, hover, drag, scroll, select_option, fill_form, read_console, handle_dialogs, list_downloads, wait_download, upload_files | 4,795 plus listed scripts |
+| `content` | get_text, get_html, execute_script, execute_predefined, load_file, snapshot, wait, click, type, press_key, hover, drag, scroll, select_option, fill_form, read_console, handle_dialogs, list_downloads, wait_download, upload_files | 5,227 plus listed scripts |
 | `history` | query, get_recent, delete_item | 506 |
 | `debug` | websocket_status | 113 |
 
