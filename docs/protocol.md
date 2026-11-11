@@ -845,6 +845,25 @@ integer from 1 to 300000, otherwise the answer is an `INVALID_PARAMETER` error.
 `content.wait_download` considers the downloads that started up to 3 seconds before the
 request: it waits while any of them is in progress and then answers the newest, finished or
 interrupted (with its `error`), or `WAIT_TIMEOUT`.
+#### Wait
+`content.wait` runs a script in the tab every `intervalMs` until it returns something other than
+`null` or `undefined`, then answers that value. A returned promise is awaited, `false` and `0`
+count as values, and the value must be JSON-compatible. The script goes through the same consent
+gate as `content.execute_script`, so with script consent on the first run may wait for the
+person to approve, the later runs reuse the answer, and the time limit starts after the first run
+(a single run, the first included, is cut off after 90 seconds at most). A script that throws, or
+returns a value that cannot be cloned (a DOM node, a function), ends the wait with
+`SCRIPT_ERROR`; a tab that no longer exists is an `API_ERROR`; a tab that cannot be scripted yet (loading, navigating) is tried
+again until the limit; consent errors are the ones `content.execute_script` gives.
+
+```json
+{"action": "content.wait", "data": {"tabId": 123, "script": "document.querySelector('#done') ? true : null", "timeoutMs": 10000, "intervalMs": 200}}
+{"type": "response", "data": {"result": true, "waitedMs": 420, "attempts": 3, "url": "https://example.org/done"}}
+```
+
+`timeoutMs` is an integer from 1 to 120000 and `intervalMs` from 100 to 5000, otherwise the answer
+is an `INVALID_PARAMETER` error. `WAIT_TIMEOUT` says whether the script kept returning `null`, a
+run did not finish, or the tab could not be scripted.
 
 #### Execute Script
 **Request:**
@@ -1001,20 +1020,6 @@ pixels (default 0.8 screens). It answers the new `x` and `y` and the largest `y`
 visible text, and errors with the available options when none matches.
 `content.fill_form` types into inputs and textareas, picks the option of a select,
 and sets a checkbox or radio to `true` or `false`; it answers `{"filled": [...]}`.
-
-#### Wait
-`content.wait` polls the tab until it has finished loading and, when given, the
-`selector` matches, the `text` is in the page and the tab URL contains `url`.
-`state: "absent"` waits for the selector or text to disappear instead. `timeoutMs`
-defaults to 10000 and is capped at 120000. A page that is navigating or has no
-content script yet is looked at again, not treated as an error.
-
-```json
-{"action": "content.wait", "data": {"tabId": 123, "selector": "#done", "text": null, "url": null, "state": "present", "timeoutMs": 10000}}
-```
-
-It answers `{"waitedMs": 420, "url": "...", "title": "..."}`, or a `WAIT_TIMEOUT`
-error saying what it was still waiting for.
 
 #### Upload Files
 `content_upload_files` reads a file, or every file in a folder, from the server's
@@ -1856,7 +1861,7 @@ request-error envelope.
 | `MONITOR_NOT_FOUND` | No request monitor exists with the supplied ID. |
 | `REQUEST_NOT_FOUND` | No captured request exists with the supplied ID. |
 | `PAGE_ERROR` | The content script reported an error for an action on the page; the message describes it. |
-| `WAIT_TIMEOUT` | A wait ended before any download finished; the message says how long it waited. |
+| `WAIT_TIMEOUT` | A wait ended before it finished: no download completed, or the script never returned a value; the message says how long it waited and why. |
 | `UPLOAD_ERROR` | A file upload referenced an unknown upload ID. |
 
 ### Script execution and consent errors

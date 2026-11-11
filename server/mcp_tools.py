@@ -2569,6 +2569,66 @@ class FoxMCPTools:
                 lines.append("No dialog was shown since the last call")
             return "\n".join(lines)
 
+        # Wait Tool
+        @self._tool()
+        async def content_wait(
+            profile_id: int,
+            tab_id: int,
+            script: str,
+            timeout: float = 10.0,
+            interval: float = 0.2
+        ) -> str:
+            """Wait until a script run in the tab returns a value, and return that value
+
+            The script is run again and again, every interval, until it returns
+            something other than null or undefined (false and 0 count as values).
+            Use it to wait for an element, text, a URL, an animation, a video or an
+            event after a click or a navigation. A script that throws, or returns a
+            value that cannot be cloned (a DOM node, a function), ends the wait with
+            its error; a tab that is loading or navigating is tried again.
+            The script must not change the page, since it runs repeatedly. It goes
+            through the same per-tab approval as content_execute_script, asked once.
+
+            Examples of scripts:
+              document.querySelector('#done') ? true : null
+              document.body.innerText.includes('Saved') ? 'Saved' : null
+              location.href.includes('/done') ? location.href : null
+              document.readyState === 'complete' ? true : null
+
+            Args:
+                tab_id: ID of the tab
+                script: JavaScript to run; its last value is the result, and a promise is awaited
+                timeout: (optional, default: 10) Seconds to keep trying, above 0 and up to 120,
+                    counted after the first run, which may wait for approval
+                interval: (optional, default: 0.2) Seconds between runs, from 0.1 to 5
+            """
+            if not isinstance(script, str) or not script.strip():
+                return "Failed to wait: script must be a nonempty string"
+            if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                    or not math.isfinite(timeout) or not 0 < timeout <= 120):
+                return "Failed to wait: timeout must be a number above 0 and at most 120"
+            if (isinstance(interval, bool) or not isinstance(interval, (int, float))
+                    or not math.isfinite(interval) or not 0.1 <= interval <= 5):
+                return "Failed to wait: interval must be a number from 0.1 to 5"
+            response = await self._send(profile_id, {
+                "id": str(uuid.uuid4()),
+                "type": "request",
+                "action": "content.wait",
+                "data": {"tabId": tab_id, "script": script,
+                         "timeoutMs": max(1, round(timeout * 1000)),
+                         "intervalMs": round(interval * 1000)},
+                "timestamp": datetime.now().isoformat()
+            }, timeout=timeout + 120.0)
+            if "error" in response:
+                return f"Failed to wait: {response['error']}"
+            if response.get("type") == "response" and "data" in response:
+                data = response["data"]
+                result = data.get("result")
+                text = result if isinstance(result, str) else json.dumps(result)
+                return (f"Ready after {data.get('waitedMs', 0)} ms and {data.get('attempts', 1)} "
+                        f"run(s) in tab {tab_id} ({data.get('url', 'Unknown URL')}):\n{text}")
+            return f"Failed to wait: {response.get('data', {}).get('message', 'Unknown error')}"
+
         # Get Page Text Tool
         @self._tool()
         async def content_get_text(profile_id: int, tab_id: int, max_length: Optional[int] = None) -> str:
@@ -2752,45 +2812,6 @@ class FoxMCPTools:
                 return f"Failed to snapshot page: {error}"
             header = f"Snapshot of {data.get('title', '')} ({data.get('url', '')}):"
             return f"{header}\n{data.get('snapshot', '')}"
-
-        # Wait Tool
-        @self._tool()
-        async def content_wait(
-            profile_id: int,
-            tab_id: int,
-            selector: Optional[str] = None,
-            text: Optional[str] = None,
-            url: Optional[str] = None,
-            gone: bool = False,
-            timeout: float = 10.0
-        ) -> str:
-            """Wait until the tab has finished loading and, if given, an element, some
-            text or a URL is there, for instance after a click that loads a page
-
-            Args:
-                tab_id: ID of the tab
-                selector: CSS selector that must match an element
-                text: Text that must appear in the page
-                url: Text the tab URL must contain
-                gone: Wait for the selector or text to disappear instead (default: False)
-                timeout: Seconds to wait at most (default: 10, maximum: 120)
-            """
-            response = await self._send(profile_id, {
-                "id": str(uuid.uuid4()),
-                "type": "request",
-                "action": "content.wait",
-                "data": {"tabId": tab_id, "selector": selector, "text": text, "url": url,
-                         "state": "absent" if gone else "present",
-                         "timeoutMs": int(timeout * 1000)},
-                "timestamp": datetime.now().isoformat()
-            }, timeout=min(max(timeout, 0.1), 120.0) + 15.0)
-            if "error" in response:
-                return f"Failed to wait: {response['error']}"
-            if response.get("type") == "response" and "data" in response:
-                data = response["data"]
-                return (f"Ready after {data.get('waitedMs', 0)} ms: "
-                        f"{data.get('title', '')} ({data.get('url', '')})")
-            return f"Failed to wait: {response.get('data', {}).get('message', 'Unknown error')}"
 
         # Click Tool
         @self._tool()
