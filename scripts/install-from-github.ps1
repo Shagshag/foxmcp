@@ -214,7 +214,8 @@ function Download-Release {
             "gcal-monthly-events-js.sh",
             "dom-summarize.sh",
             "youtube-play-pause.sh",
-            "set-file-input.py"
+            "set-file-input.py",
+            "read-console.py"
         )
 
         foreach ($scriptName in $scripts) {

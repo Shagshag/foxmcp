@@ -25,6 +25,7 @@ EXAMPLES = {
     "gcal-cal-event-js.sh",
     "gcal-daily-events-js.sh",
     "gcal-monthly-events-js.sh",
+    "read-console.py",
     "set-file-input.py",
     "youtube-play-pause.sh",
 }

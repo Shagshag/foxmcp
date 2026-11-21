@@ -376,6 +376,24 @@ Create a collection of useful scripts:
 ```
 See `predefined-ex/dom-summarize.sh` for full implementation.
 
+**`read-console.py`** - Read what the page logged to its console:
+```python
+# foxmcp-description: Read what the page logged to its console and its uncaught errors; ...
+# foxmcp-args: [--level log|info|warn|error|debug|uncaught] [--pattern TEXT] [--limit 1-500] [--clear]
+```
+Recording starts with the first call on a page, because wrapping `console` on every page from the
+start would change stack locations and cost time on pages nobody is debugging, and it ends when
+the tab navigates. So call it once before the action to debug, and again afterwards:
+```json
+{"name": "content_execute_predefined", "arguments": {"profile_id": 1, "tab_id": 123,
+ "script_name": "read-console.py", "script_args": "[\"--level\", \"error\", \"--clear\"]"}}
+```
+It answers `{"started": true, "entries": []}` on that first call and then the entries
+(`log`, `info`, `warn`, `error`, `debug`, plus `uncaught` errors and unhandled promise rejections,
+which `--level error` includes). At most 500 entries are kept, each cut to 2,000 characters.
+The entries live in the tab's script scope as `globalThis.foxmcpConsole`. See
+`predefined-ex/read-console.py`.
+
 **`extract_links.sh`** - Extract all links from page:
 ```bash
 #!/bin/bash

@@ -131,7 +131,7 @@ PY_CHECKSUMS
     mkdir -p predefined-scripts-download
 
     # List of predefined scripts to download
-    scripts=("gcal-cal-event-js.sh" "gcal-daily-events-js.sh" "gcal-monthly-events-js.sh" "dom-summarize.sh" "youtube-play-pause.sh" "set-file-input.py")
+    scripts=("gcal-cal-event-js.sh" "gcal-daily-events-js.sh" "gcal-monthly-events-js.sh" "dom-summarize.sh" "youtube-play-pause.sh" "set-file-input.py" "read-console.py")
 
     for script in "${scripts[@]}"; do
         if curl -fSL -o "predefined-scripts-download/$script" "$GITHUB_SOURCE_URL/predefined-ex/$script"; then

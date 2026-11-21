@@ -56,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `content_watch_download`, which tells a receiver on this machine how a
   download ended. The extension asks for the `downloads` permission.
 - `tabs_capture_screenshot` captures one element, by ref or selector.
+- `predefined-ex/read-console.py`, a predefined script that reads the page console like
+  `content_read_console`, for clients that only run predefined scripts.
 - `tabs_record_start` and `tabs_record_stop` send the frames of a tab to a
   receiver on this machine (HTTP or websocket).
 - Snapshots show field labels, values and states, and list open shadow DOM
