@@ -10,6 +10,13 @@ import json
 import os
 import sys
 import re
+import struct
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
+
+from fastmcp import Client
+from fastmcp.client.transports import StdioTransport
 
 import test_imports  # Automatic path setup
 from test_config import profile_connection
@@ -22,7 +29,6 @@ from mcp_client_harness import DirectMCPTestClient
 
 def png_pixel(png: bytes, x: int, y: int) -> tuple[int, int, int]:
     """(r, g, b) of one pixel of an 8-bit RGB or RGBA PNG: enough to tell red from blue"""
-    import struct
     import zlib
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n"), "not a PNG"
@@ -68,6 +74,219 @@ def png_pixel(png: bytes, x: int, y: int) -> tuple[int, int, int]:
                 line[i] = (line[i] + pick) & 255
         previous = line
     return tuple(line[x * bpp:x * bpp + 3])
+
+
+@pytest.fixture
+def screenshot_site():
+    """Local bands distinguish document coordinates from scrolled viewport coordinates."""
+    page = b'''<!doctype html><title>Screenshot regions</title>
+<style>
+html,body { margin:0; padding:0; scroll-behavior:auto }
+.band { width:2000px; height:700px }
+#top { background:linear-gradient(to right,#f00 300px,#ff0 300px) }
+#middle { background:linear-gradient(to right,#0f0 300px,#0ff 300px) }
+#bottom { background:linear-gradient(to right,#00f 300px,#f0f 300px) }
+</style><div id="top" class="band"></div>
+<div id="middle" class="band"></div><div id="bottom" class="band"></div>'''
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+
+        def log_message(self, *args):
+            pass
+
+    website = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=website.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{website.server_port}/"
+    finally:
+        website.shutdown()
+        website.server_close()
+        thread.join(timeout=5)
+
+
+@pytest_asyncio.fixture
+async def screenshot_tools(server_with_extension):
+    """Use real MCP HTTP calls, rediscovering the profile after a disposable restart."""
+    setup = server_with_extension
+    async with Client(f"http://127.0.0.1:{setup['mcp_port']}/mcp/") as client:
+        async def call(name, **args):
+            profile_id = next(iter(setup["server"].profiles))
+            result = await client.call_tool(name, {"profile_id": profile_id, **args})
+            assert not result.is_error, result
+            return result.content[0].text
+
+        async def script(tab_id, code):
+            text = await call("content_execute_script", tab_id=tab_id, code=code)
+            assert text.startswith("Script result from tab "), text
+            return text.partition("\n")[2]
+
+        async def open_page(url):
+            created = await call("tabs_create", url=url, active=False)
+            match = re.search(r"ID (\d+)", created)
+            assert match, created
+            tab_id = int(match[1])
+            for _ in range(100):
+                ready = await script(tab_id,
+                                     "document.querySelector('#bottom') ? 'ready' : 'loading'")
+                if ready == "ready":
+                    return tab_id
+                await asyncio.sleep(.1)
+            pytest.fail("Local screenshot fixture did not finish loading")
+
+        yield setup, call, script, open_page
+
+
+async def capture_png(call, tmp_path, label, **args):
+    path = tmp_path / f"{label}.png"
+    result = await call("tabs_capture_screenshot", filename=str(path), **args)
+    assert result.startswith("Screenshot saved to"), result
+    png = path.read_bytes()
+    assert png.startswith(b"\x89PNG\r\n\x1a\n"), result
+    return struct.unpack(">II", png[16:24]), png
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dpr", [1, 2])
+async def test_screenshot_regions_with_scrolling_and_dpr(screenshot_tools, screenshot_site,
+                                                        tmp_path, dpr):
+    """Crops select document pixels and output CSS dimensions times scale at either DPR."""
+    setup, call, script, open_page = screenshot_tools
+    firefox, server = setup["firefox"], setup["server"]
+    previous_profiles = set(server.profiles)
+    # Set an actual Firefox display preference, not a page mock of devicePixelRatio.
+    with (Path(firefox.profile_dir) / "user.js").open("a") as settings:
+        settings.write(f'\nuser_pref("layout.css.devPixelsPerPx", "{dpr}.0");\n')
+    assert await asyncio.to_thread(firefox.restart_firefox, headless=True)
+    for _ in range(100):
+        if set(server.profiles) - previous_profiles:
+            break
+        await asyncio.sleep(.1)
+    else:
+        pytest.fail("Firefox did not reconnect after changing display density")
+
+    tab = await open_page(screenshot_site)
+    metrics = json.loads(await script(
+        tab, "JSON.stringify({devicePixelRatio,innerWidth,innerHeight})"))
+    assert metrics["devicePixelRatio"] == dpr, metrics
+
+    size, png = await capture_png(call, tmp_path, "before-scroll", tab_id=tab,
+                                 x=0, y=0, width=160, height=80)
+    assert size == (160, 80)
+    assert png_pixel(png, 10, 10) == (255, 0, 0)
+
+    await script(tab, "window.scrollTo(350,700); 'scroll requested'")
+    for _ in range(100):
+        position = json.loads(await script(tab, "JSON.stringify([scrollX,scrollY])"))
+        if position == [350, 700]:
+            break
+        await asyncio.sleep(.05)
+    assert position == [350, 700], position
+
+    size, png = await capture_png(call, tmp_path, "document-origin", tab_id=tab,
+                                 x=0, y=0, width=160, height=80)
+    assert size == (160, 80)
+    assert png_pixel(png, 10, 10) == (255, 0, 0), "scrolling must not move the crop origin"
+
+    for scale, expected in [(None, (160, 80)), (.5, (80, 40)), (1, (160, 80)),
+                            (2, (320, 160)), (4, (640, 320))]:
+        args = {} if scale is None else {"scale": scale}
+        size, png = await capture_png(call, tmp_path, f"scrolled-{scale}", tab_id=tab,
+                                     x=350, y=700, width=160, height=80, **args)
+        assert size == expected, (dpr, scale, size)
+        assert png_pixel(png, 10, 10) == (0, 255, 255), (dpr, scale)
+
+    # Capture below the viewport too, without scrolling or activating the target tab.
+    size, png = await capture_png(call, tmp_path, "below-viewport", tab_id=tab,
+                                 x=0, y=1400, width=160, height=80)
+    assert size == (160, 80)
+    assert png_pixel(png, 10, 10) == (0, 0, 255)
+    assert json.loads(await script(tab, "JSON.stringify([scrollX,scrollY])")) == [350, 700]
+
+    size, _ = await capture_png(call, tmp_path, "legacy-full-tab", tab_id=tab)
+    assert size == (metrics["innerWidth"] * dpr, metrics["innerHeight"] * dpr)
+
+
+@pytest.mark.asyncio
+async def test_screenshot_large_upload_keeps_profile(screenshot_tools, screenshot_site,
+                                                             tmp_path):
+    """Real noisy pixels exceed the old budget and travel outside the WebSocket."""
+    setup, call, script, open_page = screenshot_tools
+    tab = await open_page(screenshot_site)
+    profile_id = next(iter(setup["server"].profiles))
+    await script(tab, """(() => {
+      document.body.innerHTML = '';
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1000;
+      document.body.append(canvas);
+      const ctx = canvas.getContext('2d');
+      const image = ctx.createImageData(1000, 1000);
+      let seed = 123456789;
+      for (let i = 0; i < image.data.length; i += 4) {
+        for (let k = 0; k < 3; k++) {
+          seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+          image.data[i + k] = seed >>> 24;
+        }
+        image.data[i + 3] = 255;
+      }
+      ctx.putImageData(image, 0, 0);
+      return 'painted';
+    })()""")
+    profile = setup["server"].profiles[profile_id]
+    original_response = profile.handle_extension_response
+    replies = []
+
+    async def record_response(message):
+        if message.get("action") in ("tabs.captureTab", "tabs.captureVisibleTab"):
+            replies.append(message)
+        return await original_response(message)
+
+    # Record the real control messages to prove bytes never cross this socket.
+    profile.handle_extension_response = record_response
+    try:
+        size, png = await capture_png(call, tmp_path, "oversized", tab_id=tab,
+                                     x=0, y=0, width=800, height=800, scale=1)
+        assert size == (800, 800)
+        assert len(png) > 1024 * 1024
+        assert png_pixel(png, 10, 10) == (207, 250, 18)
+        assert replies and "dataUrl" not in replies[-1]["data"]
+        assert replies[-1]["data"]["upload"]["size"] == len(png)
+        assert len(json.dumps(replies[-1])) < 1024
+        preview = await call("tabs_capture_screenshot", tab_id=tab,
+                             x=0, y=0, width=800, height=800, scale=1)
+        assert "Screenshot captured successfully" in preview
+        assert f"Base64 data size: {4 * ((len(png) + 2) // 3)} characters" in preview
+        async with Client(StdioTransport(sys.executable, [
+                str(Path(__file__).resolve().parents[2] / "server/server.py"),
+                "--stdio", "--single-instance", "--port", str(setup["server"].port)])) as stdio:
+            destination = tmp_path / "shared-stdio.png"
+            result = await stdio.call_tool("tabs_capture_screenshot", {
+                "profile_id": profile_id, "tab_id": tab, "filename": str(destination),
+                "x": 0, "y": 0, "width": 800, "height": 800, "scale": 1})
+            assert "Screenshot saved to" in result.content[0].text, result
+            assert destination.read_bytes() == png
+            assert "dataUrl" not in replies[-1]["data"]
+            assert len(json.dumps(replies[-1])) < 1024
+
+    finally:
+        profile.handle_extension_response = original_response
+    assert profile_id in setup["server"].profiles
+    size, png = await capture_png(call, tmp_path, "recovered", tab_id=tab,
+                                 x=0, y=0, width=32, height=32, scale=1)
+    assert size == (32, 32)
+    assert png_pixel(png, 10, 10) == (207, 250, 18)
+    jpeg_path = tmp_path / "uploaded.jpeg"
+    result = await call("tabs_capture_screenshot", tab_id=tab, filename=str(jpeg_path),
+                       format="jpeg", quality=70, x=0, y=0, width=32, height=32, scale=1)
+    assert "Screenshot saved to" in result and "jpeg, quality: 70" in result
+    assert jpeg_path.read_bytes().startswith(b"\xff\xd8")
+    assert jpeg_path.read_bytes().endswith(b"\xff\xd9")
 
 
 class TestBrowserFunctionality:
@@ -284,6 +503,46 @@ class TestBrowserFunctionality:
             "Should get script execution result"
 
         print("✅ End-to-end JavaScript execution test successful!")
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_content_wait_keeps_the_script_scope_apart(self, full_mcp_system):
+        """content_wait evaluates the caller's script without the wrapper's bindings"""
+        mcp_client = full_mcp_system['mcp_client']
+        await mcp_client.connect()
+
+        create_result = await mcp_client.call_tool("tabs_create", {
+            "url": "https://example.org/", "active": True
+        })
+        if create_result.get('isError', False):
+            pytest.skip(f"Tab creation failed: {create_result.get('content', '')}")
+        await asyncio.sleep(3.0)
+        tabs_content = (await mcp_client.call_tool("tabs_list")).get('content', '')
+        ids = [int(m) for line in tabs_content.splitlines() if 'example.org' in line
+               for m in re.findall(r'ID (\d+):', line)]
+        if not ids:
+            pytest.skip("Could not find the example.org tab")
+        tab_id = ids[0]
+
+        try:
+            # A global named `value`, made the way a script of the same tab makes it, must be
+            # read as that global, not shadowed by a binding of the wrapper
+            await mcp_client.call_tool("content_execute_script", {
+                "tab_id": tab_id, "code": "var value = 'existing global'; value"
+            })
+            read = await mcp_client.call_tool("content_wait", {
+                "tab_id": tab_id, "script": "value", "timeout": 5.0
+            })
+            assert not read.get('isError', False), read
+            assert "existing global" in read['content'], read
+
+            # A statement list that declares `value` must not collide with the wrapper
+            declared = await mcp_client.call_tool("content_wait", {
+                "tab_id": tab_id, "script": "var value = 42; value", "timeout": 5.0
+            })
+            assert not declared.get('isError', False), declared
+            assert declared['content'].rstrip().endswith("42"), declared
+        finally:
+            await mcp_client.call_tool("tabs_close", {"tab_id": tab_id})
 
     @pytest.mark.asyncio
     async def test_end_to_end_navigation_reload(self, full_mcp_system):
@@ -580,3 +839,91 @@ class TestBrowserFunctionality:
             assert response["data"]["code"] == "INVALID_PARAMETER", response
 
         print("✅ Background tab screenshot test successful!")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['tabs.captureTab', 'tabs.captureVisibleTab'])
+async def test_screenshot_reply_waits_for_completed_upload(
+        screenshot_tools, screenshot_site, tmp_path, monkeypatch, action):
+    """Withhold the real receiver's acknowledgement and observe the control socket."""
+    from threading import Event
+
+    setup, call, script, open_page = screenshot_tools
+    tab = await open_page(screenshot_site)
+    await call('tabs_switch', tab_id=tab)
+    server = setup['server']
+    profile = next(iter(server.profiles.values()))
+    receiver = server.file_transfers
+    received, acknowledge = Event(), Event()
+    original_reserve = receiver.reserve_upload
+    original_response = profile.handle_extension_response
+    grants, replies = [], []
+
+    class DelayedCompletion:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def close(self):
+            if self.handle.closed:
+                return
+            self.handle.close()
+            received.set()
+            if not acknowledge.wait(10):
+                raise TimeoutError('Test did not release the receiver acknowledgement')
+
+    def reserve(*args, **kwargs):
+        token, url, grant = original_reserve(*args, **kwargs)
+        grant.file = DelayedCompletion(grant.file)
+        grants.append(grant)
+        return token, url, grant
+
+    async def record_response(message):
+        if message.get('action') == action:
+            replies.append(message)
+        return await original_response(message)
+
+    monkeypatch.setattr(receiver, 'reserve_upload', reserve)
+    monkeypatch.setattr(profile, 'handle_extension_response', record_response)
+    output = tmp_path / 'acknowledged.png'
+    task = asyncio.create_task(call('tabs_capture_screenshot', filename=str(output),
+        **({'tab_id': tab} if action == 'tabs.captureTab' else {})))
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(received.wait, 5), 6)
+        assert grants and grants[0].file.closed
+        assert not grants[0].completion.done()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task), .2)
+        assert replies == [], 'Extension replied before the receiver acknowledged completion'
+        assert not output.exists()
+        acknowledge.set()
+        assert 'Screenshot saved to' in await asyncio.wait_for(task, 10)
+        assert output.read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+        assert len(replies) == 1 and 'dataUrl' not in replies[0]['data']
+        assert replies[0]['data']['upload']['size'] == output.stat().st_size
+        assert not receiver._uploads
+    finally:
+        acknowledge.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_screenshot_control_requests_require_upload_grants(screenshot_tools, screenshot_site):
+    setup, call, script, open_page = screenshot_tools
+    tab = await open_page(screenshot_site)
+    profile = next(iter(setup['server'].profiles.values()))
+    import uuid
+
+    for action in ('tabs.captureTab', 'tabs.captureVisibleTab'):
+        response = await profile.send_request_and_wait({
+            'id': str(uuid.uuid4()), 'type': 'request', 'action': action,
+            'data': {'tabId': tab} if action == 'tabs.captureTab' else {},
+        })
+        assert response['type'] == 'error'
+        assert response['data']['code'] == 'INVALID_PARAMETER'
+        assert 'upload grant' in response['data']['message']
+        assert 'dataUrl' not in response['data']
