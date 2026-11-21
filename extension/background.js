@@ -315,10 +315,19 @@ class ScriptConsentGate {
     }
   }
 
-  async run(id, tabId, script) {
+  async run(id, tabId, script, {deadline = null} = {}) {
+    if (deadline !== null && !Number.isFinite(deadline)) {
+      throw this.error('Script deadline must be finite', 'INVALID_PARAMETER');
+    }
     const job = {id, tabId, state: 'preparing', deferred: this.transition !== null};
     this.jobs.set(id, job);
     try {
+      if (deadline !== null) {
+        if (deadline <= Date.now()) throw this.error('Script execution timed out', 'WAIT_TIMEOUT');
+        // Cancel queued approval/preparation at the same deadline as execution.
+        job.executionTimer = setTimeout(() => this.cancel(id,
+          'Script execution timed out', 'WAIT_TIMEOUT'), deadline - Date.now());
+      }
       const tab = await browser.tabs.get(tabId);
       if (job.cancelled) throw job.cancelled;
       job.origin = this.origin(tab.url);
@@ -338,11 +347,29 @@ class ScriptConsentGate {
       if (job.cancelled || !requestSockets.has(id)) throw job.cancelled || this.error('Request cancelled');
       // Check inside the actual destination document too, closing the navigation
       // race between tabs.get and executeScript. Preserve the script's last value.
-      const code = job.gated
+      let code = job.gated
         ? `${this.hasStrictDirective(script) ? '"use strict";\n' : ''}if (this.location.origin !== ${JSON.stringify(job.origin)}) { throw new Error('FoxMCP target origin changed'); }\n${script}`
         : script;
-      return await browser.tabs.executeScript(tabId, {code});
+      if (deadline !== null) {
+        if (deadline <= Date.now()) throw this.error('Script execution timed out', 'WAIT_TIMEOUT');
+        // Bound the promise inside the injected operation too. A background-only
+        // race would leave executeScript pending and block later consent changes.
+        // Indirect eval preserves the caller's global scope and last script value.
+        code = '(async () => { let timer; try { return await Promise.race([' +
+          'Promise.resolve().then(() => (0, eval)(' + JSON.stringify(code) + '))' +
+          '.then(value => ({value})), new Promise(resolve => {' +
+          'timer = setTimeout(() => resolve({timedOut:true}), Math.max(0,' +
+          deadline + ' - Date.now())); })]); } finally { clearTimeout(timer); } })()';
+      }
+      const results = await browser.tabs.executeScript(tabId, {code});
+      if (deadline === null) return results;
+      if (job.cancelled) throw job.cancelled;
+      if (results.some(result => result?.timedOut)) {
+        throw this.error('Script execution timed out', 'WAIT_TIMEOUT');
+      }
+      return results.map(result => result?.value);
     } finally {
+      clearTimeout(job.executionTimer);
       this.jobs.delete(id);
       this.advance();
     }
@@ -1047,6 +1074,21 @@ function recordingTarget(value) {
   return url;
 }
 
+// Screenshot control requests always carry a frontend-owned upload grant.
+function screenshotUploadUrl(upload) {
+  if (!upload || typeof upload.url !== 'string'
+      || typeof upload.requestId !== 'string' || !upload.requestId) {
+    throw new Error('A screenshot upload grant with url and requestId is required');
+  }
+  const url = new URL(upload.url);
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port
+      || url.username || url.password || url.search || url.hash
+      || !/^\/uploads\/[A-Za-z0-9_-]{43}$/.test(url.pathname)) {
+    throw new Error('Invalid screenshot upload grant');
+  }
+  return url;
+}
+
 function openRecordingSocket(href) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(href);
@@ -1160,18 +1202,28 @@ browser.tabs.onRemoved.addListener(tabId => {
   recordings.delete(`rec-${tabId}`);
 });
 
-// The server accepts one message of at most 1 MiB from the extension (see Known Limits in
-// docs/architecture.md) and closes the connection on a larger one, which would drop the whole
-// profile. A screenshot that large is refused here with a message that says how to shrink it.
-const MAX_SCREENSHOT_DATA_URL_LENGTH = 1000000;
-
-function screenshotTooLarge(dataUrl) {
-  if (dataUrl.length <= MAX_SCREENSHOT_DATA_URL_LENGTH) {
-    return null;
+async function transferScreenshot(dataUrl, upload, format) {
+  const url = screenshotUploadUrl(upload);
+  // Firefox's capture API already allocates a data URL. Decode bounded chunks
+  // into a Blob so the WebSocket never carries the image or a large byte array.
+  const prefix = `data:image/${format};base64,`;
+  if (!dataUrl.startsWith(prefix)) throw new Error('Unexpected screenshot format');
+  const parts = [];
+  const encoded = dataUrl.slice(prefix.length);
+  for (let offset = 0; offset < encoded.length; offset += 65536) {
+    const decoded = atob(encoded.slice(offset, offset + 65536));
+    parts.push(Uint8Array.from(decoded, character => character.charCodeAt(0)));
   }
-  return `The screenshot is ${dataUrl.length} characters as a data URL, over the `
-    + `${MAX_SCREENSHOT_DATA_URL_LENGTH} the connection to the server can carry; use jpeg, a lower `
-    + 'quality or scale, or a smaller region';
+  const blob = new Blob(parts, {type: `image/${format}`});
+  const response = await fetch(url.href, {
+    method: 'PUT', body: blob, credentials: 'omit', redirect: 'error', cache: 'no-store',
+    headers: {'X-FoxMCP-Request-Id': upload.requestId},
+    signal: AbortSignal.timeout(110000)
+  });
+  // The receiver sends 204 only after receiving every byte and closing its
+  // staging file. Await this acknowledgement before returning control metadata.
+  if (response.status !== 204) throw new Error(`Screenshot upload returned HTTP ${response.status}`);
+  return {upload: {requestId: upload.requestId, size: blob.size, type: blob.type}};
 }
 
 // The tab group properties a request sets, out of title, color and collapsed
@@ -1498,6 +1550,7 @@ async function handleTabsAction(id, action, data) {
         let visibleRegion;
         try {
           visibleRegion = captureRegionOptions(data);
+          screenshotUploadUrl(data.upload);
         } catch (regionError) {
           sendError(id, 'INVALID_PARAMETER', regionError.message);
           break;
@@ -1524,13 +1577,9 @@ async function handleTabsAction(id, action, data) {
           await setOverlay(false);
           const dataUrl = await browser.tabs.captureVisibleTab(windowId, options)
             .finally(() => setOverlay(true));
-          const visibleTooLarge = screenshotTooLarge(dataUrl);
-          if (visibleTooLarge) {
-            sendError(id, 'CAPTURE_ERROR', visibleTooLarge);
-            break;
-          }
+          const transferred = await transferScreenshot(dataUrl, data.upload, options.format);
           sendResponse(id, action, {
-            dataUrl: dataUrl,
+            ...transferred,
             format: options.format,
             quality: options.quality,
             windowId: windowId
@@ -1643,6 +1692,7 @@ async function handleTabsAction(id, action, data) {
         let tabRegion;
         try {
           tabRegion = captureRegionOptions(data);
+          screenshotUploadUrl(data.upload);
         } catch (regionError) {
           sendError(id, 'INVALID_PARAMETER', regionError.message);
           break;
@@ -1662,13 +1712,9 @@ async function handleTabsAction(id, action, data) {
           await setTabOverlay(false);
           const dataUrl = await browser.tabs.captureTab(captureTabId, captureOptions)
             .finally(() => setTabOverlay(true));
-          const tabTooLarge = screenshotTooLarge(dataUrl);
-          if (tabTooLarge) {
-            sendError(id, 'CAPTURE_ERROR', tabTooLarge);
-            break;
-          }
+          const transferred = await transferScreenshot(dataUrl, data.upload, captureOptions.format);
           sendResponse(id, action, {
-            dataUrl: dataUrl,
+            ...transferred,
             format: captureOptions.format,
             quality: captureOptions.quality,
             tabId: captureTabId
@@ -1925,52 +1971,50 @@ async function handleContentAction(id, action, data) {
           sendError(id, 'INVALID_PARAMETER', 'intervalMs must be an integer from 100 to 5000');
           break;
         }
-        // An error inside the script comes back as a value, so it can be told apart from the
-        // errors of a tab that cannot be scripted yet (still loading, navigating). The value is
-        // cloned once in the page, so one that cannot be returned (a DOM node, a function) is an
-        // error of the script, not a failure to retry.
-        // The key is random for each wait, so a page cannot return one that looks like an error.
-        const errorKey = '__foxmcpWaitError' + Math.random().toString(36).slice(2);
-        const wrapped = '(async () => { try { const value = await eval(' + JSON.stringify(data.script) +
-          '); structuredClone(value); return value; } catch (error) {' +
-          ' return { ' + errorKey + ': String((error && error.message) || error) }; } })()';
+        // The script runs as an indirect eval, so in the global scope of the content script and not in
+        // the scope of this wrapper: it cannot collide with, or see, anything the wrapper declares. The wrapper
+        // answers {value} or {error}, so an error of the script is told apart from the errors of
+        // a tab that cannot be scripted yet (still loading, navigating), and a returned object
+        // cannot be mistaken for an error. The value is cloned once in the page, so one that cannot
+        // be returned (a DOM node, a function) is an error of the script, not a failure to retry.
+        const wrapped = '(async () => { try { return await Promise.resolve((0, eval)(' +
+          JSON.stringify(data.script) + ')).then(result => { structuredClone(result);' +
+          ' return { value: result }; }); } catch (error) {' +
+          ' return { error: String((error && error.message) || error) }; } })()';
         const started = Date.now();
         let deadline = null;
         let attempts = 0;
         let lastProblem = null;
         let finished = false;
         while (!finished) {
-          const remaining = deadline === null ? 90000 : deadline - Date.now();
+          const attemptDeadline = deadline === null ? Date.now() + 90000 : deadline;
+          const remaining = attemptDeadline - Date.now();
           // Timers can fire a little early, so a sliver of time left is no time to run again.
           if (remaining <= 0 || (deadline !== null && remaining < 20)) break;
           attempts++;
-          let timer;
           try {
-            const results = await Promise.race([
-              scriptConsent.run(id, data.tabId, wrapped),
-              new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('attempt timed out')), remaining); })
-            ]);
-            const value = results && results.length > 0 ? results[0] : null;
-            if (value !== null && value !== undefined) {
-              if (typeof value === 'object' && errorKey in value) {
-                sendError(id, 'SCRIPT_ERROR', `Wait script failed: ${value[errorKey]}`);
-              } else {
-                sendResponse(id, action, {
-                  result: value, waitedMs: Date.now() - started, attempts,
-                  url: await getCurrentTabUrl(data.tabId)
-                });
-              }
+            const results = await scriptConsent.run(id, data.tabId, wrapped,
+              {deadline: attemptDeadline});
+            const outcome = results && results.length > 0 ? results[0] : null;
+            if (outcome && typeof outcome === 'object' && 'error' in outcome) {
+              sendError(id, 'SCRIPT_ERROR', `Wait script failed: ${outcome.error}`);
+              finished = true;
+            } else if (outcome && outcome.value !== null && outcome.value !== undefined) {
+              sendResponse(id, action, {
+                result: outcome.value, waitedMs: Date.now() - started, attempts,
+                url: await getCurrentTabUrl(data.tabId)
+              });
               finished = true;
             }
             lastProblem = null;
           } catch (waitError) {
-            if (typeof waitError.code === 'string' && waitError.code) {
+            if (waitError.code === 'WAIT_TIMEOUT') {
+              lastProblem = 'a run of the script did not finish';
+              break;
+            } else if (typeof waitError.code === 'string' && waitError.code) {
               // Consent was denied or cancelled, or the origin changed: not worth another run.
               sendError(id, waitError.code, `Wait script not run: ${waitError.message}`);
               finished = true;
-            } else if (waitError.message === 'attempt timed out') {
-              lastProblem = 'a run of the script did not finish';
-              break;
             } else {
               // The tab cannot be scripted right now (loading, navigating): look again, unless
               // it is gone.
@@ -1982,8 +2026,6 @@ async function handleContentAction(id, action, data) {
               }
               lastProblem = `the tab could not be scripted (${waitError.message})`;
             }
-          } finally {
-            clearTimeout(timer);
           }
           if (finished) break;
           if (deadline === null) deadline = Date.now() + data.timeoutMs;
@@ -2427,6 +2469,8 @@ async function handleWindowsAction(id, action, data) {
 const activeMonitors = new Map(); // monitor_id -> monitor config
 const capturedRequests = new Map(); // monitor_id -> array of requests
 const requestDetails = new Map(); // request_id -> full request details
+// Initial metadata survives rejected hops, but only while the chain is in flight.
+const requestStarts = new Map();
 const capturedResponseBodies = new Map(); // [monitor_id, request_id] -> body projection
 const monitorCaptureOptions = new Map(); // kept after stop while captured data is readable
 const MAX_STORED_RESPONSE_BODIES = 200;
@@ -2486,12 +2530,24 @@ function responseBodyKey(monitorId, requestId) {
   return JSON.stringify([monitorId, requestId]);
 }
 
+// Public results keep the original request at the top level. Internally the
+// complete hop list is still needed to correlate response streams and filters.
+function redirectMetadata(request) {
+  const hops = request?.hops || [];
+  return {
+    initial_status_code: hops[0]?.status_code,
+    initial_redirect_url: hops[0]?.redirect_url,
+    redirects: hops.slice(1)
+  };
+}
+
 // WebRequest listener functions
 let onBeforeRequestListener = null;
 let onBeforeSendHeadersListener = null;
 let onSendHeadersListener = null;
 let onHeadersReceivedListener = null;
 let onResponseStartedListener = null;
+let onBeforeRedirectListener = null;
 let onCompletedListener = null;
 let onErrorOccurredListener = null;
 
@@ -2519,6 +2575,8 @@ function setupWebRequestListeners() {
   onHeadersReceivedListener = function(details) {
     handleWebRequestEvent('onHeadersReceived', details);
   };
+
+  onBeforeRedirectListener = details => handleWebRequestEvent('onBeforeRedirect', details);
 
   // Completed - captures final timing and status
   onCompletedListener = function(details) {
@@ -2549,6 +2607,10 @@ function setupWebRequestListeners() {
     ["responseHeaders", "blocking"]
   );
 
+  browser.webRequest.onBeforeRedirect.addListener(
+    onBeforeRedirectListener, { urls: ["<all_urls>"] }
+  );
+
   browser.webRequest.onCompleted.addListener(
     onCompletedListener,
     { urls: ["<all_urls>"] }
@@ -2577,6 +2639,7 @@ function clearAllMonitors(reason) {
   activeMonitors.clear();
   capturedRequests.clear();
   requestDetails.clear();
+  requestStarts.clear();
   capturedResponseBodies.clear();
   monitorCaptureOptions.clear();
 
@@ -2592,6 +2655,7 @@ function stopWebRequestMonitoring() {
     return;
   }
 
+  requestStarts.clear();
   console.log('🛑 Stopping WebRequest monitoring - removing listeners');
 
   if (onBeforeRequestListener) {
@@ -2602,6 +2666,11 @@ function stopWebRequestMonitoring() {
   if (onHeadersReceivedListener) {
     browser.webRequest.onHeadersReceived.removeListener(onHeadersReceivedListener);
     onHeadersReceivedListener = null;
+  }
+
+  if (onBeforeRedirectListener) {
+    browser.webRequest.onBeforeRedirect.removeListener(onBeforeRedirectListener);
+    onBeforeRedirectListener = null;
   }
 
   if (onCompletedListener) {
@@ -2618,36 +2687,33 @@ function stopWebRequestMonitoring() {
 }
 
 function handleWebRequestEvent(eventType, details) {
-  // Check if any monitor should capture this request
-  for (const [monitorId, monitor] of activeMonitors) {
-    if (shouldCaptureRequest(monitor, details)) {
-      captureRequestEvent(monitorId, eventType, details);
-    }
+  if (!requestStarts.has(details.requestId)) {
+    requestStarts.set(details.requestId, {
+      url: details.url, method: details.method || 'GET',
+      type: details.type, tabId: details.tabId
+    });
+  }
+  const monitors = Array.from(activeMonitors.values()).filter(monitor =>
+    shouldCaptureRequest(monitor, details));
+  if (monitors.length > 0) captureRequestEvent(monitors, eventType, details);
+  if (eventType === 'onCompleted' || eventType === 'onErrorOccurred') {
+    requestStarts.delete(details.requestId);
   }
 }
 
 function shouldCaptureRequest(monitor, details) {
-  // Check tab filter
-  if (monitor.tab_id && details.tabId !== monitor.tab_id) {
-    return false;
-  }
-
-  // Check the method and resource type filters, which are known as soon as the request starts.
-  // A redirect keeps the request id but can change the method (a POST answered with 302
-  // is followed as a GET), so a request already recorded keeps the method it started with.
+  // Select the chain by its initial metadata, including chains rejected by all
+  // monitors. Redirects reuse requestId and may change both method and URL.
+  const initial = requestStarts.get(details.requestId) || details;
+  if (monitor.tab_id && initial.tabId !== monitor.tab_id) return false;
   const filters = monitor.options;
-  const known = requestDetails.get(details.requestId);
-  const method = (known ? known.method : (details.method || 'GET')).toUpperCase();
-  if (filters && filters.methods.length > 0 && !filters.methods.includes(method)) {
-    return false;
-  }
-  if (filters && filters.resource_types.length > 0 && !filters.resource_types.includes(details.type)) {
-    return false;
-  }
+  const method = (initial.method || 'GET').toUpperCase();
+  if (filters.methods.length > 0 && !filters.methods.includes(method)) return false;
+  if (filters.resource_types.length > 0 && !filters.resource_types.includes(initial.type)) return false;
 
   // Check URL patterns
   if (monitor.url_patterns && monitor.url_patterns.length > 0) {
-    const url = details.url;
+    const url = initial.url;
     return monitor.url_patterns.some(pattern => {
       // <all_urls> is not glob syntax, but it is what a WebExtensions caller
       // reaches for, and as a glob it matches nothing at all.
@@ -2680,7 +2746,7 @@ function passesOutcomeFilters(options, request) {
   return true;
 }
 
-function captureRequestEvent(monitorId, eventType, details) {
+function captureRequestEvent(monitors, eventType, details) {
   const requestId = details.requestId;
   const timestamp = new Date().toISOString();
 
@@ -2702,12 +2768,25 @@ function captureRequestEvent(monitorId, eventType, details) {
       type: details.type,
       timestamp: timestamp,
       events: [],
+      hops: [],
       listed_by: new Set()
     };
     requestDetails.set(requestId, request);
   }
 
-  // Add event data
+  // One event/hop update per Firefox notification, regardless of monitor count.
+  if (eventType === 'onBeforeRequest' || request.hops.length === 0) {
+    request.hops.push({ url: details.url, method: details.method || 'GET' });
+    delete request.status_code;
+    delete request.response_headers;
+    delete request.response_content_type;
+    delete request.response_content_length;
+    delete request.response_body_size;
+    for (const monitor of monitors) {
+      capturedResponseBodies.delete(responseBodyKey(monitor.id, requestId));
+    }
+  }
+  const hop = request.hops[request.hops.length - 1];
   const event = {
     type: eventType,
     timestamp: timestamp,
@@ -2718,7 +2797,7 @@ function captureRequestEvent(monitorId, eventType, details) {
     case 'onBeforeRequest':
       event.url = details.url;
       event.method = details.method;
-      if (monitorCaptureOptions.get(monitorId)?.capture_request_bodies) {
+      if (monitors.some(monitor => monitor.options.capture_request_bodies)) {
         event.requestBody = details.requestBody;
       }
       break;
@@ -2728,6 +2807,7 @@ function captureRequestEvent(monitorId, eventType, details) {
       event.statusCode = details.statusCode;
       event.statusLine = details.statusLine;
       request.status_code = details.statusCode;
+      hop.status_code = details.statusCode;
       request.response_headers = details.responseHeaders;
 
       // Extract content length and type from headers
@@ -2743,7 +2823,14 @@ function captureRequestEvent(monitorId, eventType, details) {
       }
       break;
 
+    case 'onBeforeRedirect':
+      hop.status_code = details.statusCode;
+      hop.redirect_url = details.redirectUrl;
+      event.redirectUrl = details.redirectUrl;
+      break;
+
     case 'onCompleted':
+      hop.status_code = details.statusCode;
       event.statusCode = details.statusCode;
       request.status_code = details.statusCode;
       request.completed = true;
@@ -2754,34 +2841,37 @@ function captureRequestEvent(monitorId, eventType, details) {
     case 'onErrorOccurred':
       event.error = details.error;
       request.error = details.error;
+      hop.error = details.error;
       request.completed = true;
       break;
   }
 
   request.events.push(event);
 
-  // If request is complete, add to captured list
-  if (request.completed && !request.listed_by.has(monitorId) &&
-      passesOutcomeFilters(monitorCaptureOptions.get(monitorId), request)) {
-    const captured = capturedRequests.get(monitorId) || [];
-    captured.push({
-      request_id: requestId,
-      url: request.url,
-      method: request.method,
-      status_code: request.status_code,
-      duration_ms: request.duration_ms || 0,
-      timestamp: request.timestamp,
-      tab_id: request.tab_id,
-      type: request.type,
-      error: request.error,
-      response_size_bytes: request.response_content_length || 0,
-      response_content_type: request.response_content_type || null
-    });
-    capturedRequests.set(monitorId, captured);
-    request.listed_by.add(monitorId);
+  // Completion is projected independently into every matching monitor.
+  for (const { id: monitorId } of monitors) {
+    if (request.completed && !request.listed_by.has(monitorId) &&
+        passesOutcomeFilters(monitorCaptureOptions.get(monitorId), request)) {
+      const captured = capturedRequests.get(monitorId) || [];
+      captured.push({
+        request_id: requestId,
+        url: request.url,
+        method: request.method,
+        status_code: request.status_code,
+        duration_ms: request.duration_ms || 0,
+        timestamp: request.timestamp,
+        tab_id: request.tab_id,
+        type: request.type,
+        error: request.error,
+        response_size_bytes: request.response_content_length || 0,
+        response_content_type: request.response_content_type || null
+      });
+      capturedRequests.set(monitorId, captured);
+      request.listed_by.add(monitorId);
 
-    const sizeInfo = request.response_content_length ? ` (${request.response_content_length} bytes)` : '';
-    console.log(`📋 Captured request: ${request.method} ${request.url} -> ${request.status_code || 'ERROR'}${sizeInfo}`);
+      const sizeInfo = request.response_content_length ? ` (${request.response_content_length} bytes)` : '';
+      console.log(`📋 Captured request: ${request.method} ${request.url} -> ${request.status_code || 'ERROR'}${sizeInfo}`);
+    }
   }
 }
 
@@ -2816,6 +2906,7 @@ function captureResponseBody(details) {
   }
 
   // Intercept once and buffer the largest prefix needed by any interested monitor.
+  const hop = requestDetails.get(details.requestId)?.hops.at(-1);
   const maxSize = Math.max(...monitors.map(monitor => monitor.options.max_body_size));
   const kept = [];
   let totalBytes = 0;
@@ -2845,8 +2936,10 @@ function captureResponseBody(details) {
 
     try {
       for (const monitor of monitors) {
-        // A disconnected profile must not repopulate storage from a stale stream.
-        if (monitorCaptureOptions.get(monitor.id) === monitor.options) {
+        // Neither a disconnected profile nor an earlier redirect hop may
+        // repopulate the final response cache from a stale stream.
+        if (monitorCaptureOptions.get(monitor.id) === monitor.options &&
+            requestDetails.get(details.requestId)?.hops.at(-1) === hop) {
           storeResponseBody(details.requestId, monitor, kept, totalBytes);
         }
       }
@@ -3047,7 +3140,8 @@ async function handleRequestsAction(id, action, data) {
             timestamp: req.timestamp,
             tab_id: req.tab_id,
             type: req.type,
-            error: req.error
+            error: req.error,
+            ...redirectMetadata(requestDetails.get(req.request_id))
           }))
         });
         break;
@@ -3088,6 +3182,11 @@ async function handleRequestsAction(id, action, data) {
 
         sendResponse(id, action, {
           request_id: data.request_id,
+          url: requestDetail.url,
+          method: requestDetail.method,
+          status_code: requestDetail.status_code,
+          error: requestDetail.error,
+          ...redirectMetadata(requestDetail),
           request_headers: requestHeaders,
           response_headers: responseHeaders,
           request_body: {

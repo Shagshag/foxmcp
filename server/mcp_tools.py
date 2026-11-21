@@ -90,20 +90,16 @@ SCRIPT_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9._-]+$')
 
 
 def predefined_script_command(script_path):
-    """Choose a native Windows interpreter without evaluating a shell command.
+    """Use the server's Python for .py files and Git Bash for Windows .sh files.
 
-    This belongs here because content_execute_predefined launches the scripts.
-    Windows cannot launch .py/.sh files through their shebang like Linux/macOS,
-    so it needs an explicit interpreter. The guard leaves POSIX launches alone.
-    POSIX keeps its executable/shebang behaviour. On Windows, prefer Git's Bash
-    over a bare bash.exe lookup, which can select the WSL launcher instead.
+    Other POSIX scripts keep executable/shebang behavior. On Windows, prefer
+    Git's Bash over a bare bash.exe lookup, which can select the WSL launcher.
     """
-    if sys.platform != 'win32':
-        return [script_path]
     extension = os.path.splitext(script_path)[1].lower()
     if extension == '.py':
-        # Reuses the server's environment and dependencies
         return [sys.executable, script_path]
+    if sys.platform != 'win32':
+        return [script_path]
     if extension != '.sh':
         return [script_path]
 
@@ -133,6 +129,12 @@ def predefined_script_command(script_path):
         'Shell scripts on Windows require Git Bash. Install Git for Windows '
         'or set FOXMCP_BASH to the absolute path to its bash.exe, then restart FoxMCP.'
     )
+
+
+def predefined_script_accessible(script_path: str) -> bool:
+    """Accept readable regular Python files or executable other generators."""
+    permission = os.R_OK if os.path.splitext(script_path)[1].lower() == '.py' else os.X_OK
+    return os.path.isfile(script_path) and os.access(script_path, permission)
 
 
 def run_predefined_script(command, args_list):
@@ -232,7 +234,7 @@ def describe_predefined_scripts(scripts_dir):
     """The script listing appended to content_execute_predefined's description
 
     scripts_dir is FOXMCP_EXT_SCRIPTS, or None when it is unset. Lists the files
-    the tool would run - executable regular files directly in the directory with
+    the tool would run - readable Python or executable other regular files with
     an allowed name - except dot files, one line each from read_script_header.
     Scripts with nothing to say for themselves share one line of names. When
     there is nothing to list, says why, so an agent does not spend a call to
@@ -256,7 +258,7 @@ def describe_predefined_scripts(scripts_dir):
     for name in names:
         path = os.path.join(scripts_dir, name)
         if (name.startswith('.') or not SCRIPT_NAME_PATTERN.match(name)
-                or not os.path.isfile(path) or not os.access(path, os.X_OK)):
+                or not predefined_script_accessible(path)):
             continue
         description, args = read_script_header(path)
         if not description and not args:
@@ -1509,39 +1511,27 @@ class FoxMCPTools:
             selector: Optional[str] = None,
             padding: Optional[float] = None
         ) -> str:
-            """Capture a screenshot of the visible tab, or of the tab given by tab_id
+            """Capture a tab screenshot with optional crop and scale
 
-            To save tokens, capture only a region (x, y, width, height; all four together),
-            or just one element (ref from content_snapshot, or a CSS selector), and/or shrink
-            the image with scale (e.g. 0.5). A region is in CSS pixels from the top-left of
-            the whole page, not of what is visible, so scrolling does not change it. An
-            element is scrolled into view and captured with its padding. The image has the
-            size of the region or element (or of the visible area) in CSS pixels times scale:
-            with a region or an element and no scale it is that size on any display (400 x 200
-            gives 400 x 200 pixels), and scale 2 gives 800 x 400. Without a crop and without
-            scale the image keeps the display pixel density. An image over about 1 MB as a
-            data URL is refused (the connection carries at most 1 MiB per message): use jpeg,
-            a lower quality or scale, or a smaller region.
-
-            What comes back depends on whether you pass a filename: with one, the image is
-            written to disk and you get a success message and the path; without one, you get
-            the image inline as a base64 data URL, which for a full window is large.
+            Use filename for the complete image; otherwise return a preview and size.
+            Crops use document-relative CSS pixels. Images transfer directly to this
+            server over HTTP, including images larger than the control-message limit.
+            To save tokens, capture one element instead of a region: pass ref (from
+            content_snapshot) or a CSS selector, and the element is scrolled into view and
+            captured with a padding around it. Not together with a region.
 
             Args:
-                filename: Name of the file to save the screenshot (optional, if not provided returns base64)
-                window_id: ID of the window to capture (optional, defaults to current window)
+                filename: Output path for the complete image; omitted returns a preview and size
+                window_id: Window whose active tab to capture; defaults to the current window
                 format: Image format ('png' or 'jpeg', default: 'png')
                 quality: Image quality for JPEG format (1-100, default: 90)
                 tab_id: Capture this tab, even in the background (not with window_id)
-                x: Left edge of the region to capture (optional, integer CSS pixels from the left of
-                    the page, 0 or more; give x, y, width and height together)
-                y: Top edge of the region (optional, integer CSS pixels from the top of the
-                    page, 0 or more)
-                width: Width of the region (optional, integer CSS pixels, more than 0)
-                height: Height of the region (optional, integer CSS pixels, more than 0)
-                scale: Output pixels per CSS pixel (optional, a finite number above 0 and up to 4,
-                    for example 0.5 for half size or 2 for a sharper image; default: 1 with a
-                    region or an element, the display pixel density without one)
+                x: Crop's left edge in document CSS pixels, integer >= 0; requires y, width, height
+                y: Crop's top edge in document CSS pixels, integer >= 0; requires x, width, height
+                width: Crop width in CSS pixels, positive integer; requires x, y, height
+                height: Crop height in CSS pixels, positive integer; requires x, y, width
+                scale: Finite output pixels per CSS pixel, 0 < scale <= 4; defaults to 1
+                    with a crop, otherwise the target tab's DPR
                 ref: Capture only this element (optional, ref from content_snapshot); it is
                     scrolled into view
                 selector: Capture only the element this CSS selector matches (optional, used
@@ -1550,9 +1540,8 @@ class FoxMCPTools:
                     more; default: 8)
 
             Returns:
-                Success message with file path if filename provided, otherwise base64 encoded image data URL
-
-                Not exposed to clients — see the description above.
+                With filename: a save confirmation and path. Without filename: the first
+                100 data-URL characters and the base64 character count. Errors return text.
             """
             if tab_id is not None and window_id is not None:
                 return "Error capturing screenshot: pass tab_id or window_id, not both"
@@ -1608,77 +1597,76 @@ class FoxMCPTools:
                     "timestamp": datetime.now().isoformat()
                 }
 
-            response = await self._send(profile_id, request)
+            token = None
+            service = self.file_transfers
+            output_filename = filename
+            if filename and not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                output_filename = f"{filename}.{format}"
+            try:
+                if service is None:
+                    raise RuntimeError("Screenshot transfer service is unavailable")
+                directory = os.path.dirname(os.path.abspath(output_filename)) if filename else None
+                token, url, upload = service.reserve_upload(
+                    request["id"], profile_id, "screenshot", f"image/{format}", directory)
+                request["data"]["upload"] = {"url": url, "requestId": request["id"]}
+                response = await self._send(profile_id, request, timeout=120.0)
 
-            if "error" in response:
-                return f"Error capturing screenshot: {response['error']}"
+                if "error" in response:
+                    return f"Error capturing screenshot: {response['error']}"
+                if response.get("type") == "error":
+                    error_msg = response.get("data", {}).get("message", "Unknown error")
+                    return f"Failed to capture screenshot: {error_msg}"
+                if response.get("type") != "response" or "data" not in response:
+                    return "Unable to capture screenshot"
 
-            if (tab_id is not None and response.get("type") == "error"
-                    and response.get("data", {}).get("code") == "UNKNOWN_ACTION"):
-                return (
-                    "Failed to capture screenshot: this FoxMCP extension is too old to capture a "
-                    "tab that is not showing (it has no tabs.captureTab). Update the extension, or "
-                    "make the tab the active one (tabs_switch) and use window_id."
-                )
+                data = response["data"]
+                uploaded = data.get("upload")
+                if (not isinstance(uploaded, dict)
+                        or uploaded.get("requestId") != request["id"]
+                        or uploaded.get("type") != upload.mime_type):
+                    return "Error capturing screenshot: missing or mismatched upload acknowledgement"
+                completed = await asyncio.wait_for(
+                    asyncio.shield(asyncio.wrap_future(upload.completion)),
+                    timeout=max(0.001, upload.expires - time.monotonic()))
+                if (type(uploaded.get("size")) is not int
+                        or uploaded["size"] != completed["size"] or completed["size"] == 0):
+                    return "Error capturing screenshot: upload size mismatch"
 
-            if response.get("type") == "response" and "data" in response:
-                data_url = response["data"].get("dataUrl", "")
-                captured_format = response["data"].get("format", format)
-                captured_quality = response["data"].get("quality", quality)
-                captured_window_id = response["data"].get("windowId", "current")
-                captured_tab_id = response["data"].get("tabId")
+                captured_format = data.get("format", format)
+                captured_quality = data.get("quality", quality)
+                captured_window_id = data.get("windowId", "current")
+                captured_tab_id = data.get("tabId")
                 captured_from = (
                     f"tab {captured_tab_id}" if captured_tab_id is not None
                     else f"window {captured_window_id}"
                 )
-
-                if not data_url:
-                    return "No screenshot data received"
-
-                # Extract the base64 part from data URL
-                data_prefix = f"data:image/{captured_format};base64,"
-                if not data_url.startswith(data_prefix):
-                    return f"Screenshot captured but unexpected format: {data_url[:100]}..."
-
-                base64_data = data_url[len(data_prefix):]
-
-                # If filename is provided, save to file
                 if filename:
                     try:
-                        # Add file extension if not provided
-                        if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            filename = f"{filename}.{captured_format}"
-
-                        # Decode base64 and save to file
-                        image_data = base64.b64decode(base64_data)
-                        with open(filename, 'wb') as f:
-                            f.write(image_data)
-
-                        file_size = len(image_data)
-                        return (
-                            f"Screenshot saved to '{filename}' "
-                            f"({captured_from}, {captured_format}, "
-                            f"quality: {captured_quality}, size: {file_size} bytes)"
-                        )
-
-                    except Exception as e:
-                        return f"Error saving screenshot to file '{filename}': {str(e)}"
-
-                else:
-                    # Return base64 data as before when no filename provided
-                    data_size = len(base64_data)
+                        os.replace(completed["path"], output_filename)
+                    except OSError as error:
+                        return f"Error saving screenshot to file '{output_filename}': {error}"
                     return (
-                        f"Screenshot captured successfully from {captured_from} "
-                        f"({captured_format}, quality: {captured_quality}):\n"
-                        f"{data_url[:100]}...\n\n"
-                        f"Base64 data size: {data_size} characters"
+                        f"Screenshot saved to '{output_filename}' "
+                        f"({captured_from}, {captured_format}, "
+                        f"quality: {captured_quality}, size: {completed['size']} bytes)"
                     )
 
-            elif response.get("type") == "error":
-                error_msg = response.get("data", {}).get("message", "Unknown error")
-                return f"Failed to capture screenshot: {error_msg}"
-
-            return "Unable to capture screenshot"
+                prefix = f"data:{completed['type']};base64,"
+                with open(completed["path"], "rb") as image:
+                    preview = prefix + base64.b64encode(image.read(75)).decode("ascii")
+                data_size = 4 * ((completed["size"] + 2) // 3)
+                return (
+                    f"Screenshot captured successfully from {captured_from} "
+                    f"({captured_format}, quality: {captured_quality}):\n"
+                    f"{preview[:100]}...\n\n"
+                    f"Base64 data size: {data_size} characters"
+                )
+            except (asyncio.TimeoutError, OSError, ValueError, RuntimeError) as error:
+                detail = str(error) or type(error).__name__
+                return f"Error capturing screenshot: {detail}"
+            finally:
+                if token is not None:
+                    service.revoke(token)
 
         # Screen Recording Tools
         async def tab_request(profile_id: int, message: Dict[str, Any]):
@@ -3248,9 +3236,14 @@ class FoxMCPTools:
                 logger.warning(f"Predefined script refused: {script_name!r} not found in {scripts_dir!r}")
                 return f"Error: Script '{script_name}' not found in {scripts_dir}"
 
-            if not os.access(script_path, os.X_OK):
-                logger.warning(f"Predefined script refused: {script_name!r} is not executable")
-                return f"Error: Script '{script_name}' is not executable"
+            if not os.path.isfile(script_path):
+                logger.warning(f"Predefined script refused: {script_name!r} is not a regular file")
+                return f"Error: Script '{script_name}' is not a regular file"
+
+            if not predefined_script_accessible(script_path):
+                required = 'readable' if os.path.splitext(script_path)[1].lower() == '.py' else 'executable'
+                logger.warning(f"Predefined script refused: {script_name!r} is not {required}")
+                return f"Error: Script '{script_name}' is not {required}"
 
             try:
                 # Parse JSON arguments - handle both empty string and JSON arrays
@@ -3281,7 +3274,7 @@ class FoxMCPTools:
                     logger.warning(f"Predefined script {script_name!r} refused: script_args is not valid JSON - {e}")
                     return f"Error: Invalid JSON in script_args: {e}"
 
-                # Chooses an interpreter only where Windows needs one, after the existing script-name, permission, and argument validation.
+                # Choose an interpreter after script-name, permission and argument validation.
                 try:
                     command = predefined_script_command(script_path)
                 except ValueError as e:
@@ -3425,7 +3418,8 @@ class FoxMCPTools:
             its monitors; profile disconnection clears monitors and captured data.
 
             Args:
-                url_patterns: List of URL patterns to monitor (e.g., ["https://api.example.com/*", "*/api/*"])
+                url_patterns: Patterns matched against each chain's initial URL
+                    (e.g., ["https://example.org/api/*", "*/api/*"])
                 options: Strict capture settings; unknown fields are rejected.
                     - capture_request_bodies: bool (default: True)
                     - capture_response_bodies: bool (default: True)
@@ -3556,22 +3550,14 @@ class FoxMCPTools:
             limit: Annotated[Optional[int], Field(strict=True, ge=1)] = None
         ) -> str:
             """
-            List captured request summaries from a monitoring session
-
-            Without limit every summary is returned, which on a busy page can be a
-            great many. Pass limit to keep the answer short: it returns the last
-            requests captured, and total_requests still counts everything.
-
-            A request appears here once it has completed, so a page navigation
-            started a moment ago will not be in the list yet. Start with
-            requests_start_monitoring, then reuse its monitor_id here. This reads
-            stored summaries without starting or stopping capture. Use a returned
-            request_id with requests_get_content to inspect its stored body.
+            List completed request chains with ordered redirected requests. Start monitoring
+            before triggering traffic; use limit to return only the last captured chains.
+            Reads remain available after stop until the profile disconnects.
 
             Args:
                 monitor_id: ID of the monitoring session
-                limit: (optional, an integer of 1 or more) Return only this many of the
-                    last requests captured; the answer then has returned_requests
+                limit: Positive integer cap on returned chains; total_requests remains
+                    the full count and returned_requests counts the limited result
 
             Returns:
                 JSON string with captured request summaries

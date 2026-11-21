@@ -8,12 +8,46 @@ generated from.
 
 ## Unreleased compatibility requirements
 
-Before releasing the monitoring-option repairs, increase the checked protocol
-ID from released v1.7.0's 3 to 4, shared with all other incompatible unreleased
-changes. Monitoring now rejects unknown/invalid options, honors request-body
-suppression and isolates each monitor's retained bodies and content lookup.
-These change existing extension/server behavior. The current development ID
-remains 3 pending the release-preparation step, as agreed with the maintainer.
+Before releasing the changes below, increase the checked protocol ID from
+released v1.7.0's 3 to 4. All incompatible unreleased changes share this single
+increment. The development ID remains 3 until release preparation, as agreed
+with the maintainer.
+
+- Monitoring rejects unknown/invalid options, honors request-body suppression
+  and isolates each monitor's retained bodies and content lookup.
+- Screenshots from PR #30 support crop/scale options. Crops default to one
+  output pixel per CSS pixel. Include these options and their defaults in the
+  release-wide compatibility review alongside the required upload contract.
+
+- Screenshot tools negotiate a direct binary upload URL and require a matching
+  upload acknowledgement. Both capture actions can now save images above the
+  old control-message cap; HTTP failures produce capture errors. Include this
+  response/transport behavior in the same release-wide ID 3-to-4 review.
+  Upload grants are required for both capture actions; the inline data-URL
+  response, server decoding fallback and legacy size guard are removed. The
+  extension replies only after the receiver acknowledges completed reception
+  and closes the staging file.
+
+- Redirect capture exposes follow-on requests in `redirects`, original response
+  status/destination at the top level, and selects chains by initial URL/method/
+  resource type, fixing method-filter dependence on other monitors.
+
+- Content text/HTML reads from PR #33 now reload discarded tabs and execute
+  their pages before reading. Concurrent readers share a reload; a tab that
+  does not finish loading within 15 seconds returns an `API_ERROR`. This is an
+  observable change to existing content actions, covered by the same next
+  protocol-ID increment rather than a separate increment for this PR.
+
+- The new `content_wait` action uses gate-owned attempt deadlines. Expired
+  approval work cannot inject later, and unresolved script promises no longer
+  leave an executing job blocking subsequent consent-policy changes. The wire
+  request/reply shapes are unchanged; include lifecycle/error behavior in the
+  release-wide review, using the same shared increment.
+
+The catalog now includes `content_wait`. Reconcile fixed tool/filter counts and
+its final-archive smoke scenario before the strict release rehearsal, as required
+by the release checklist; ordinary PR CI does not establish that release coverage.
+
 Update both peers, compatibility tests and the final release review before
 rehearsing, tagging or publishing. See the
 [protocol policy](docs/protocol.md#protocol-id-compatibility-policy) and

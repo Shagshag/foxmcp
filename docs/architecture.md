@@ -21,12 +21,16 @@ flowchart TB
         frontend -->|tools| tools
         frontend -->|file_transfers| files
         tools <-->|browser| remote
+        tools -->|download and upload grants| files
     end
 
     subgraph ownerProcess["Browser-owner process"]
         directFrontend["MCPFrontend (HTTP mode only)"]
         directTools["FoxMCPTools"]
+        directFiles["FileTransferServer"]
         directFrontend -->|tools| directTools
+        directFrontend -->|file_transfers| directFiles
+        directTools -->|download and upload grants| directFiles
 
         subgraph browserServer["BrowserServer"]
             hub["BrowserProxyHub"]
@@ -48,13 +52,18 @@ flowchart TB
     httpClient <-->|"MCP HTTP :3000"| directFrontend
     profile1 <-->|"/ WebSocket :8765"| firefox1
     profile2 <-->|"/ WebSocket :8765"| firefox2
+    firefox1 <-->|"HTTP binary transfers (loopback)"| files
+    firefox2 <-->|"HTTP binary transfers (loopback)"| files
+    firefox1 <-->|"HTTP binary transfers (loopback)"| directFiles
+    firefox2 <-->|"HTTP binary transfers (loopback)"| directFiles
 ```
 
 Each Python component label names an actual class or attribute. The outer boxes
 label process boundaries. Registry arrows represent calls through
 `BrowserServer.send_request_and_wait` or `BrowserServer.list_profiles`; the
-`profiles` dictionary itself does not execute requests. The HTTP frontend owns
-its own `FileTransferServer` too, omitted from the diagram for space.
+`profiles` dictionary itself does not execute requests. Each frontend owns its
+own `FileTransferServer`; only the frontend issuing a tool call grants its
+transfer URL. Binary HTTP data bypasses the browser owner's proxy.
 
 | Diagram symbol | Source definition | Reference in code |
 |---|---|---|
@@ -65,7 +74,7 @@ its own `FileTransferServer` too, omitted from the diagram for space.
 | `BrowserProxyHub` | [browser_proxy.py](../server/browser_proxy.py) | `BrowserServer.proxy_hub` |
 | `BrowserServer.profiles` | [browser_server.py](../server/browser_server.py) | Maps profile IDs to `BrowserProfile` instances |
 | `BrowserProfile` | [browser_profile.py](../server/browser_profile.py) | One socket and its pending replies |
-| `FileTransferServer` | [file_transfer.py](../server/file_transfer.py) | `MCPFrontend.file_transfers` |
+| `FileTransferServer` | [file_transfer.py](../server/file_transfer.py) | `MCPFrontend.file_transfers`; `grant` for downloads, `reserve_upload` for staged uploads |
 
 
 The browser owner's `/discovery` HTTP route shares port 8765 with `/proxy` and
@@ -84,6 +93,12 @@ owner binds the extension port. Firefox profiles each open their own extension
 WebSocket to `/` on that port. MCP clients discover connected profiles and
 address every browser call with a `profile_id`; there is no active-profile
 default. See [profile discovery](api-reference.md#firefox-profiles).
+
+The extension also tracks initial metadata for in-flight request chains, records
+redirect hops once per network event, and projects terminal results into each
+matching monitor. These remain responsibilities of the existing Firefox profile
+extension component and its WebSocket connection; routing and process ownership
+are unchanged. See [redirect chains](web-request-monitoring.md#redirect-chains).
 
 The extension owns per-monitor capture options and stored request/response body
 projections. Overlapping monitors share one intercepted network stream, while
@@ -113,8 +128,8 @@ in-memory tab/origin decisions and one sequential approval queue. Toggle changes
 wait for the current batch, including executing scripts, before admitting later
 requests under the new policy. The popup owns no authorization state. Origin
 changes, closure and restart invalidate decisions; extension disconnect removes
-pending work. The injected code also checks the destination origin. Script tool
-calls use a 300-second server timeout with ordinary request/response messages;
+pending work. The injected code also checks the destination origin. Raw and
+predefined script calls use a 300-second server timeout with ordinary messages;
 the extension gives each active prompt 60 seconds. Accepting a decision first
 arms popup-unload listeners and acknowledges the choice. The popup then closes;
 the background waits for unload and revalidates before releasing the job or
@@ -127,6 +142,15 @@ A successful opening clears recovery state so dismissal alone does not reopen
 the popup. See
 [configuration](configuration.md#script-injection-consent) and
 [protocol](protocol.md#script-consent-unreleased-2026-10-31).
+
+For `content_wait`, the gate also owns each attempt's absolute deadline. A
+background timer expires queued approval work before injection. During execution,
+an injected wrapper races the script promise against that same deadline, so the
+Firefox operation settles before the gate releases its job. A timed-out promise
+cannot retain the job indefinitely and block a later consent-policy change.
+This stops awaiting the promise; it does not terminate synchronous JavaScript or
+undo script side effects. Ordinary script calls without a deadline keep their
+existing execution path. No additional server cancellation messages are used.
 
 #### Content Script (`content.js`)
 - **Page Injection**: Declared for `<all_urls>` in each tab's top-level document;
@@ -258,6 +282,35 @@ process owns its `MCPFrontend.file_transfers`; `RemoteBrowser` only forwards
 browser commands. The grant URL and metadata pass through `/proxy` and the selected extension fetches the
 file directly from the originating process. File bytes do not pass through the
 browser owner's proxy.
+
+#### Browser uploads
+
+Screenshot tools reserve a one-use `PUT /uploads/<token>` URL from the same
+frontend-owned `FileTransferServer`. `BrowserServer` or `RemoteBrowser` forwards
+that URL and a stable upload request ID through the ordinary control route.
+The extension background uploads a PNG/JPEG Blob directly to that frontend
+with cookies omitted, redirects refused and a 110-second fetch timeout. Page
+content scripts cannot implement this privileged capture/transport operation.
+
+The receiver validates Host, extension Origin (when present), fetch destination,
+request ID, expected MIME type and Content-Length. It reads at most 64 KiB at a
+time into a private temporary file, with no payload-size ceiling. The request,
+profile and payload kind are bound to the grant in the frontend. Proxy rewriting
+of the outer request ID does not change the upload correlation ID. No new public
+MCP tool or browser-owner receiver is added.
+
+Both capture actions require an upload grant. The receiver returns HTTP 204
+only after the complete body is received and its staging file is closed. The
+extension awaits that acknowledgement before sending its metadata-only control
+reply. The tool requires both completions; it has no inline data-URL fallback.
+For a filename, staging is beside the destination and `os.replace` publishes
+only after success; failures preserve existing output. Previews read only enough
+bytes for the existing 100-character preview and calculate the base64 length
+from the byte count. All grants, including completed uploads awaiting the browser
+reply, count toward the existing 32-transfer limit. A 120-second total deadline,
+an idle socket timeout, tool cancellation and frontend shutdown revoke grants
+and remove partial/staged files. The browser's capture API still allocates the
+image in Firefox memory; disk space and capture limits still apply.
 
 #### WebSocket Protocol
 ```json
@@ -422,7 +475,10 @@ Enforced in `mcp_tools.py` before a predefined script runs:
 - **Directory selection**: Source startup requires `FOXMCP_EXT_SCRIPTS`; the installed console command defaults to bundled examples when it is absent. An explicit value overrides the bundle, including an empty value to disable scripts.
 - **Name Filtering**: Script names must match `^[a-zA-Z0-9._-]+$` and may not contain `/`, `\`, or `..`
 - **Path Containment**: The resolved absolute path must stay inside the scripts directory
-- **Executable Check**: The file must exist and be executable
+- **File Access Check**: The file must be regular and readable for `.py`
+  generators (case-insensitive), or executable for other generators. Python
+  generators run with `sys.executable` in the originating MCP process on every
+  platform. See [script authoring](scripts.md#multi-language-support).
 - **Timeout Protection**: Scripts are killed after 30 seconds
 - **Execution Isolation**: Scripts run as separate subprocesses
 - **Audit Logging**: Every invocation is logged at `INFO` with script name, arguments and tab; every refusal and failure at `WARNING`. Arguments are truncated at 120 characters; the generated JavaScript is never logged, only its size. See [`scripts.md`](scripts.md#what-gets-logged)
@@ -481,7 +537,10 @@ Tested in `tests/integration/test_connection_origin.py`. Test clients standing i
 - Results are not cached; every browser call makes a fresh round trip.
 - The browser owner's listener uses the WebSocket library's default incoming
   message-size limit. `RemoteBrowser` connects with `max_size=None` for incoming
-  proxy replies; this does not remove the owner's incoming limits.
+  proxy replies; this does not remove the owner's incoming limits. Screenshot
+  tools use direct binary HTTP uploads and are not subject to that payload
+  limit. Screenshot requests without upload grants are refused. Transfers
+  require Firefox and the originating frontend on the same host.
 
 ## Extension Points
 

@@ -84,28 +84,6 @@ does not rely on an extension-supplied name or a user-entered label.
 - `tabs_ungroup(profile_id, tab_ids)` - Take tabs out of their group
 - `tabs_groups_update(profile_id, group_id, title=None, color=None, collapsed=None)` - Change a group's title, colour or collapsed state
 - `tabs_groups_query(profile_id, window_id=None, title=None, color=None, collapsed=None)` - List tab groups and their IDs
-- `tabs_capture_screenshot(profile_id, filename=None, window_id=None, format="png", quality=90, tab_id=None, x=None, y=None, width=None, height=None, scale=None, ref=None, selector=None, padding=None)` - Capture screenshot of the visible tab, or of one given tab
-  - If `filename` provided: saves screenshot to file and returns success message
-  - If `filename` omitted: returns base64 encoded image data URL
-  - Automatically adds file extension (.png/.jpeg) if not provided
-  - Without `tab_id`, it is the tab a window is showing (`window_id`, or the current window)
-  - With `tab_id`, that tab is captured wherever it is: a background tab, or one in a window that is
-    not in front, and nothing is switched. Not together with `window_id`. Needs an extension that
-    has `tabs.captureTab`; an older one answers that it is too old
-  - `ref` or `selector` (not with a region) captures just that element, scrolled into view, with
-    `padding` pixels around it (optional, a finite number of 0 or more; default 8); the image is
-    captured at `scale` 1 unless a `scale` is given, like a region
-  - `x`, `y`, `width`, `height` (optional, all four together, integer CSS pixels from the top-left
-    of the whole page, not of what is visible, so scrolling does not change the region; `x` and `y`
-    at least 0, `width` and `height` above 0) capture only that region
-  - `scale` (optional, a finite number above 0 and at most 4) is the number of output pixels per
-    CSS pixel: `0.5` halves the image and `2` gives a sharper one. The image is the region (or the
-    visible area) in CSS pixels times `scale`, whatever the display: a region or an element with no `scale` is
-    captured at `scale` 1, so `400 x 200` gives `400 x 200` pixels, while a request with neither a
-    region nor a `scale` keeps the display pixel density, as before
-  - An image whose data URL is over 1,000,000 characters is refused with a `CAPTURE_ERROR` that says
-    to use `jpeg`, a lower `quality` or `scale`, or a smaller region: the connection to the server
-    carries at most 1 MiB per message. A large region with a high `scale` can reach that
 - `tabs_record_start(profile_id, tab_id, url, interval_ms=500, max_frames=60, scale=0.5, quality=50)` - Record a tab by sending small JPEG screenshots to a receiver on this machine that you run. `url` is an `http://` or `https://` address that takes a POST of each frame, or a `ws://` or `wss://` address that gets a text message and then a binary message per frame (see [receiving frames](#receiving-recording-frames)); only `127.0.0.1`, `localhost` and `[::1]` are accepted. `interval_ms` is an integer from 100 to 5000, `max_frames` from 1 to 300 (it stops there), `scale` a number above 0 and at most 1, `quality` an integer from 1 to 100. The first frame is sent before the call returns, so a receiver that is not there is an error. Starting again on the same tab replaces the earlier recording, and it is dropped when the tab closes or the connection ends
 - `tabs_record_stop(profile_id, recording_id)` - Stop a recording and report how many frames reached the receiver, how many were skipped because it was slow, and why it ended early, if it did
 
@@ -138,6 +116,66 @@ http.server.HTTPServer(("127.0.0.1", 8099), Receiver).serve_forever()
 ```
 
 Pass `http://127.0.0.1:8099/` as `url`; Pillow can turn the saved frames into a GIF afterwards.
+
+
+#### Screenshots
+
+```python
+tabs_capture_screenshot(
+    profile_id, filename=None, window_id=None, format="png", quality=90,
+    tab_id=None, x=None, y=None, width=None, height=None, scale=None
+)
+```
+
+Use `tab_id` to capture a specific tab, including a background tab, without
+activating it. Otherwise, capture the active tab in `window_id`, or the current
+window when `window_id` is omitted. `tab_id` and `window_id` cannot be combined.
+
+Provide `filename` to save the complete image through the MCP server and return
+a save confirmation and path. A missing image extension is added automatically.
+Without `filename`, the result contains a preview of the first 100 data-URL
+characters and the base64 character count. It does not contain the complete image.
+`format` is `"png"` or `"jpeg"`; `quality` controls JPEG quality from 1 to 100.
+
+To crop, provide all four of `x`, `y`, `width` and `height` as integer CSS pixels.
+The origin is the **top-left corner of the document**: scrolling does not change
+the selected region, and regions below the viewport can be captured. `x` and `y`
+must be at least 0; `width` and `height` must be greater than 0.
+
+`scale` is the number of output pixels per CSS pixel. It must be finite and
+satisfy `0 < scale <= 4`. For a 400 x 200 CSS-pixel crop:
+
+| Scale | Output dimensions in pixels |
+|---|---|
+| Omitted or `1` | 400 x 200 |
+| `0.5` | 200 x 100 |
+| `2` | 800 x 400 |
+
+Cropped requests default to scale 1 on every display. Requests without a crop or
+an explicit scale retain the target tab's device pixel ratio (DPR).
+
+Screenshots upload PNG/JPEG bytes directly to the originating MCP process over
+one-use loopback HTTP URLs. Images larger than the WebSocket's 1 MiB message
+budget can be saved without reducing resolution or quality. Python streams to
+a temporary file with bounded memory; existing output is replaced only after
+both the upload and capture acknowledgement succeed. Without a filename the
+same transfer provides the preview and size, then removes the temporary file.
+
+Transfers have a 120-second total deadline (the extension fetch allows 110
+seconds) and require Firefox and the MCP process on the same host. Disk space
+and Firefox's capture/memory limits still apply. Upload failures return capture
+errors and remove staging files. The extension waits for the receiver to finish
+receiving and close its staging file before replying.
+
+Use matching server and extension builds. Inline screenshot replies from older
+extensions are unsupported. See the
+[screenshot protocol](protocol.md#capture-screenshot-of-one-tab).
+
+To crop to one element instead of a region, `tabs_capture_screenshot` also takes `ref` (from
+`content_snapshot`) or `selector` and an optional `padding` (a finite number of 0 or more, default
+8): the element is scrolled into view and captured with `padding` pixels around it, at `scale` 1
+unless a `scale` is given, like a region. Not together with `x`, `y`, `width` and `height`.
+An extension without this support ignores the three fields and returns the whole image.
 
 
 ### Firefox Containers
@@ -219,10 +257,18 @@ for the complete input-assignment example and transfer details.
   `document.documentElement.outerHTML`, truncated to 2,000 characters plus an ellipsis
   when longer. Neither content reader includes iframe documents.
 - `content_execute_script(profile_id, tab_id, code)` - Execute JavaScript directly
-- `content_execute_predefined(profile_id, tab_id, script_name, script_args="")` - Execute predefined external scripts
+- `content_execute_predefined(profile_id, tab_id, script_name, script_args="")` - Execute predefined external scripts. `.py` files use the server's Python interpreter on every platform and need read permission, without requiring a shebang or executable bit. See [script authoring](scripts.md#multi-language-support).
 - The content tools inject the content script into tabs opened before the extension started
 - `content_snapshot(profile_id, tab_id, max_elements=300, viewport_only=False)` - List visible interactive elements, each with a ref, its label, current value (never a password's) and states (disabled, required, checked, expanded, focused); includes open shadow DOM and same-origin iframes; `viewport_only` lists only what is on screen
 - `content_wait(profile_id, tab_id, script, timeout=10.0, interval=0.2)` - Run `script` in the tab every `interval` seconds until it returns something other than `null` or `undefined`, and return that value (`false` and `0` are values). Use it to wait for an element, text, a URL, an animation, a video or an event; for example `document.querySelector('#done') ? true : null`. `script` is a nonempty string whose last value is the result, and a promise is awaited. `timeout` is a number of seconds above 0 and at most 120, counted after the first run, and `interval` is from 0.1 to 5. A script that throws ends the wait with its error (`SCRIPT_ERROR`); a tab that is loading or navigating is tried again; the wait fails with `WAIT_TIMEOUT` when time runs out. The script runs repeatedly, so it must not change the page. It is subject to the same per-tab approval as `content_execute_script`, asked once
+
+Wait attempt deadlines cover approval and execution. The first attempt has a
+90-second deadline; later attempts share the remaining polling budget. Timeout
+settles the injected wrapper and releases its consent job, so a later consent
+change and script request can proceed. It stops awaiting the returned promise;
+it does not terminate synchronous JavaScript or undo side effects. Firefox timer
+scheduling can delay timeout delivery. See the
+[protocol details](protocol.md#wait).
 - `content_click(profile_id, tab_id, ref=None, selector=None, double_click=False)` - Click an element by ref or selector
 - `content_type(profile_id, tab_id, text, ref=None, selector=None, clear=True, submit=False)` - Type into an input or editable element
 - `content_read_console(profile_id, tab_id, level=None, pattern=None, limit=50, clear=False)` - Read the page's console output and uncaught errors, filtered by `level`, `pattern` (a case-sensitive substring) and `limit` (1 to 500, the newest entries); `clear` forgets all entries after reading. Recording starts with the first call on a page and restarts when the tab navigates. At most 500 entries of 2,000 characters are kept, and what a page logs (including secrets or personal data) is returned as is
@@ -260,11 +306,14 @@ for the complete input-assignment example and transfer details.
   - Returns JSON with stop status and statistics
   - Captured data outlives the monitor: the two tools below still answer afterwards
 - `requests_list_captured(profile_id, monitor_id, limit=None)` - List captured request summaries
-  - Returns JSON with array of request summaries (metadata only, no full content)
-  - Optional filters (all must match) keep the list short on busy pages: URL text, method,
-    resource type, minimum status, `failed_only` (an error or status 400 and above), and
-    `limit` for the newest matches. When any is given the JSON also has `matched_requests`;
-    `total_requests` still counts everything captured
+  - Returns JSON with array of request summaries (metadata only, no full content).
+    Each entry represents a request chain. `redirects` lists only requests after
+    the original, with URL, method and observed status, destination or error.
+    Original URL/method stay at the top level; `initial_status_code` and
+    `initial_redirect_url` preserve its response. Top-level status/error describe
+    the final outcome. Capture selection
+    uses the initial URL/method/resource type; outcome filters use the final result.
+    See [redirect chains](web-request-monitoring.md#redirect-chains).
   - A request appears once it has completed, so a navigation started a moment ago
     is not in the list yet
   - `MONITOR_NOT_FOUND` for an id that never existed or has been cleared. Monitors
@@ -273,9 +322,13 @@ for the complete input-assignment example and transfer details.
   - `limit` (optional, an integer of 1 or more) returns only that many of the last requests
     captured, to keep the answer short on a busy page; the JSON then also has
     `returned_requests`, and `total_requests` still counts everything captured. Anything
-    else is refused with `{"error": ...}` without contacting the extension. To capture less in
+    else is rejected by MCP validation before contacting the extension (direct Python
+    calls return `{"error": ...}`). To capture less in
     the first place, use the capture filters of `requests_start_monitoring`
 - `requests_get_content(profile_id, monitor_id, request_id, include_binary=False, save_request_body_to=None, save_response_body_to=None)` - Get full request/response content
+  - Includes original URL/method and response metadata plus the chain's ordered
+    `redirects`, excluding the original. Retained response content belongs to the
+    final observed request.
   - `include_binary`: **ignored** — non-text bodies never come back as content, only as a size
   - `save_request_body_to`, `save_response_body_to`: **ignored** — `saved_to_file` is always `null`
   - Returns JSON with response headers and bodies allowed by the selected monitor's

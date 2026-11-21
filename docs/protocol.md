@@ -661,7 +661,11 @@ Colours are `blue`, `cyan`, `grey`, `green`, `orange`, `pink`, `purple`, `red` a
   "data": {
     "windowId": 1,
     "format": "png",
-    "quality": 90
+    "quality": 90,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "req_007b"
+    }
   },
   "timestamp": "2025-09-03T12:00:00.000Z"
 }
@@ -674,10 +678,14 @@ Colours are `blue`, `cyan`, `grey`, `green`, `orange`, `pink`, `purple`, `red` a
   "type": "response",
   "action": "tabs.captureVisibleTab",
   "data": {
-    "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
     "format": "png",
     "quality": 90,
-    "windowId": 1
+    "windowId": 1,
+    "upload": {
+      "requestId": "req_007b",
+      "size": 70,
+      "type": "image/png"
+    }
   },
   "timestamp": "2025-09-03T12:00:01.000Z"
 }
@@ -685,8 +693,7 @@ Colours are `blue`, `cyan`, `grey`, `green`, `orange`, `pink`, `purple`, `red` a
 
 #### Capture Screenshot of One Tab
 `tabs.captureVisibleTab` can only see the tab a window is showing. This one captures a given tab
-wherever it is, a background tab included, and does not switch to it. An extension without it
-answers `UNKNOWN_ACTION`.
+wherever it is, a background tab included, and does not switch to it.
 
 **Request:**
 ```json
@@ -697,7 +704,11 @@ answers `UNKNOWN_ACTION`.
   "data": {
     "tabId": 123,
     "format": "png",
-    "quality": 90
+    "quality": 90,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "req_007c"
+    }
   },
   "timestamp": "2025-09-03T12:00:00.000Z"
 }
@@ -710,45 +721,138 @@ answers `UNKNOWN_ACTION`.
   "type": "response",
   "action": "tabs.captureTab",
   "data": {
-    "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
     "format": "png",
     "quality": 90,
-    "tabId": 123
+    "tabId": 123,
+    "upload": {
+      "requestId": "req_007c",
+      "size": 70,
+      "type": "image/png"
+    }
   },
   "timestamp": "2025-09-03T12:00:01.000Z"
 }
 ```
 
-Both capture actions accept an optional `rect` (`{"x", "y", "width", "height"}`) to capture
-only a region and an optional `scale` (a finite number above 0 and at most 4) for the image size.
-The rect is in CSS pixels from the top-left of the document, not of the visible area, so the
-scroll position does not change what it selects:
+#### Screenshot regions, scale and size limits
+
+Both `tabs.captureTab` and `tabs.captureVisibleTab` accept `rect` and `scale` in
+the request's `data` object. `rect` contains integer `x`, `y`, `width` and `height`
+in CSS pixels from the document's top-left corner. Scrolling does not change the
+selected region. `x` and `y` must be at least 0; `width` and `height` must be
+greater than 0. `scale` must be finite and satisfy `0 < scale <= 4`. Invalid
+rectangles or scales return `INVALID_PARAMETER`.
+
+These action/data excerpts request a 400 x 200 CSS-pixel crop at scale 0.5,
+producing a 200 x 100 pixel image:
 
 ```json
-{"action": "tabs.captureVisibleTab", "data": {"format": "png", "quality": 90, "rect": {"x": 0, "y": 0, "width": 400, "height": 200}, "scale": 0.5}}
-{"action": "tabs.captureTab", "data": {"tabId": 123, "format": "png", "quality": 90, "rect": {"x": 0, "y": 0, "width": 400, "height": 200}, "scale": 0.5}}
+{
+  "action": "tabs.captureTab",
+  "data": {
+    "tabId": 123,
+    "format": "png",
+    "quality": 90,
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 400,
+      "height": 200
+    },
+    "scale": 0.5,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "originating-tool-request-id"
+    }
+  }
+}
 ```
+
+```json
+{
+  "action": "tabs.captureVisibleTab",
+  "data": {
+    "windowId": 1,
+    "format": "png",
+    "quality": 90,
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 400,
+      "height": 200
+    },
+    "scale": 0.5,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "originating-tool-request-id"
+    }
+  }
+}
+```
+
+| Request | Default scale when omitted |
+|---|---|
+| With `rect` | `1`, independent of display density |
+| Without `rect` | The target tab's device pixel ratio (DPR) |
+
+Both capture actions require an `upload` grant, with and without a filename.
+A missing or invalid grant returns `INVALID_PARAMETER` before capture:
+
+```json
+"upload": {
+  "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+  "requestId": "originating-tool-request-id"
+}
+```
+
+The extension uploads binary `image/png` or `image/jpeg` bytes with `PUT`, an
+explicit Content-Length and `X-FoxMCP-Request-Id` matching the stable grant ID.
+The upload ID is carried in data because `/proxy` remaps outer request IDs.
+The receiver belongs to the originating MCP frontend, not the browser owner.
+No filename or profile ID is sent to the extension for the transfer.
+
+Cookies are omitted, redirects refused and fetch is limited to 110 seconds.
+URLs must target `http://127.0.0.1:<port>/uploads/<token>` without credentials,
+queries or fragments. The receiver accepts one transfer, validates its expected
+MIME/correlation ID, streams to disk and returns HTTP 204 only after the entire
+Content-Length has arrived and the staging file is closed. Grants expire after
+120 seconds; malformed or unauthorized requests cannot consume them. Claimed grants cannot be retried.
+Partial/expired/cancelled transfers are discarded, with no WebSocket-sized cap.
+The listener grants no page CORS access.
+
+Only after HTTP 204 does the extension send its normal capture response with
+`upload` metadata; format/quality and tab/window metadata are unchanged. The
+extension awaits the receiver's acknowledgement before sending this reply:
+
+```json
+"data": {
+  "upload": {"requestId": "originating-tool-request-id", "size": 2000000, "type": "image/png"},
+  "format": "png", "quality": 90, "tabId": 4
+}
+```
+
+The tool requires both successful reception and this matching acknowledgement
+before publishing the file or rendering its existing preview/size result.
+Upload failure returns `CAPTURE_ERROR`. Files are staged and published by the
+frontend, never written to arbitrary paths by the extension.
+
+Inline `dataUrl` responses and the old data-URL size guard are removed. The
+server requires a matching upload acknowledgement and will not decode a legacy
+inline reply. For `tabs.captureTab`, `tabId` must be a non-negative integer
+(`INVALID_PARAMETER` otherwise). Missing/uncapturable tabs and failed uploads
+return `CAPTURE_ERROR`. See the [MCP tool](api-reference.md#screenshots)
+and [transfer ownership](architecture.md#browser-uploads).
+
+Use matching server and extension builds. The required upload contract shares
+the next release's protocol-ID increment from 3 to 4; release preparation must
+enforce the new ID on both peers. See
+[release preparation](development.md#release-process).
 
 Instead of `rect` they accept a `ref` or `selector` and an optional `padding` (a finite number of
 0 or more, default 8): the element is scrolled into view and its rectangle, in document
 coordinates (iframes included) and rounded outwards to whole pixels, becomes the region, so the
 same rules apply to the resulting `rect` and `scale`. An extension without this change ignores
 `ref`, `selector` and `padding`.
-
-`x`, `y`, `width` and `height` must be integers, `x` and `y` at least 0 and `width` and `height`
-above 0. A `rect` or `scale` that breaks these rules is an `INVALID_PARAMETER` error, not a
-full-size capture. The image is the region (or the visible area) in CSS pixels times `scale`,
-whatever the display: a `rect` (or an element, see below) with no `scale` is captured at
-`scale` 1 (Firefox itself would use
-the device pixel ratio), and a request with neither is left to Firefox as before. An extension
-older than this change ignores both fields and returns the whole image, so a client that needs the
-region should check the extension version.
-
-`tabId` must be a non-negative integer (`INVALID_PARAMETER` otherwise). A tab
-that does not exist or cannot be captured is a `CAPTURE_ERROR`. So is an image whose data URL is
-longer than 1,000,000 characters: the server accepts one message of 1 MiB from the extension and
-closes the connection on a larger one (see Known Limits in `architecture.md`), so the extension
-refuses to send it and the message says to use jpeg, a lower quality or scale, or a smaller region.
 
 #### Record a Tab
 A recording sends small JPEG captures of one tab to a receiver on this machine as they are taken,
@@ -890,8 +994,9 @@ interrupted (with its `error`), or `WAIT_TIMEOUT`.
 `null` or `undefined`, then answers that value. A returned promise is awaited, `false` and `0`
 count as values, and the value must be JSON-compatible. The script goes through the same consent
 gate as `content.execute_script`, so with script consent on the first run may wait for the
-person to approve, the later runs reuse the answer, and the time limit starts after the first run
-(a single run, the first included, is cut off after 90 seconds at most). A script that throws, or
+person to approve, and later runs reuse the answer. The first attempt has a 90-second
+deadline including approval; after it finishes, later attempts share the `timeoutMs`
+polling budget. A script that throws, or
 returns a value that cannot be cloned (a DOM node, a function), ends the wait with
 `SCRIPT_ERROR`; a tab that no longer exists is an `API_ERROR`; a tab that cannot be scripted yet (loading, navigating) is tried
 again until the limit; consent errors are the ones `content.execute_script` gives.
@@ -904,6 +1009,14 @@ again until the limit; consent errors are the ones `content.execute_script` give
 `timeoutMs` is an integer from 1 to 120000 and `intervalMs` from 100 to 5000, otherwise the answer
 is an `INVALID_PARAMETER` error. `WAIT_TIMEOUT` says whether the script kept returning `null`, a
 run did not finish, or the tab could not be scripted.
+
+The gate owns attempt deadlines, including time spent awaiting approval. An
+expired queued attempt is cancelled before injection. For an executing attempt,
+the injected wrapper stops awaiting the script promise at the deadline, allowing
+Firefox's execution and the gate job to settle before a later consent-policy
+change. Firefox timer scheduling can delay delivery. Timeout does
+not stop synchronous JavaScript, cancel an arbitrary caller promise or undo its
+side effects. Scripts must remain safe to run repeatedly.
 
 #### Execute Script
 **Request:**
@@ -1688,7 +1801,11 @@ format only.
       "capture_request_bodies": true,
       "capture_response_bodies": true,
       "max_body_size": 50000,
-      "content_types_to_capture": ["application/json", "text/plain"]
+      "content_types_to_capture": ["application/json", "text/plain"],
+      "methods": [],
+      "resource_types": [],
+      "min_status": null,
+      "failed_only": false
     }
   },
   "timestamp": "2026-08-14T12:00:00.100Z"
@@ -1707,7 +1824,11 @@ the answer's `options` always lists all of them. The server sends a filter only 
 because an extension from before the filters rejects options it does not know with
 `INVALID_PARAMETER`. A request that does not match `methods` or `resource_types` is not captured;
 `min_status` and `failed_only` are checked when the request completes, and a request that fails
-them is not listed. The protocol ID stays 3: the options are additive and omitted when unset.
+them is not listed. Development ID remains 3 until the agreed release-preparation
+step; the next release requires ID 4 for the accumulated API changes, including
+redirect-chain responses (including the redirects-only array and separate
+original response metadata) and initial-hop selection. See
+[unreleased compatibility requirements](../RELEASES.md#unreleased-compatibility-requirements).
 Unknown fields, including `sensitive_headers`, and invalid values are rejected;
 the extension returns `INVALID_PARAMETER` before starting a monitor.
 
@@ -1716,6 +1837,22 @@ including overlapping and stopped monitors. `requests.get_content` returns
 `MONITOR_NOT_FOUND` for an unknown monitor and `REQUEST_NOT_FOUND` if the request
 was not captured by that monitor. The global response-body cache retains up to
 200 monitor/request projections; each uses its own size and content-type rules.
+
+#### Redirect metadata
+
+Both list entries and `requests.get_content` data contain `redirects`, ordered
+follow-on requests excluding the original. Each object has `url`, `method` and
+optional `status_code`, `redirect_url` and `error`. A request without redirects
+has an empty array. Three redirects produce three array entries.
+
+Top-level `url` and `method` identify the original request; `initial_status_code`
+and `initial_redirect_url` expose its observed response status and destination.
+Unavailable initial response fields are omitted. Top-level `status_code` and
+`error` reflect the terminal result. Initial metadata used for URL/method/type/tab
+selection is retained independently of capture acceptance until completion or
+failure. Internal hop tracking includes the original, while the public array
+contains only follow-on requests. Completed metadata follows existing retention.
+See [redirect semantics and content association](web-request-monitoring.md#redirect-chains).
 
 #### List Captured
 **Request:**
@@ -1749,7 +1886,9 @@ was not captured by that monitor. The global response-body cache retains up to
         "duration_ms": 118,
         "timestamp": "2026-08-14T12:00:31.221Z",
         "tab_id": 7,
-        "type": "xmlhttprequest"
+        "type": "xmlhttprequest",
+        "initial_status_code": 200,
+        "redirects": []
       }
     ]
   },
@@ -1783,6 +1922,11 @@ A request that failed also carries `error`, Firefox's network error string.
   "action": "requests.get_content",
   "data": {
     "request_id": "1234",
+    "url": "https://example.org/api/items",
+    "method": "GET",
+    "status_code": 200,
+    "initial_status_code": 200,
+    "redirects": [],
     "request_headers": {},
     "response_headers": {"content-type": "application/json"},
     "request_body": {
@@ -1902,7 +2046,7 @@ request-error envelope.
 | `UNKNOWN_ACTION` | The action namespace or operation is unsupported. |
 | `INVALID_PARAMETER` | An action field is missing or has an invalid type/value. |
 | `UNSUPPORTED_API` | This Firefox lacks the API or permission required for the action. |
-| `CAPTURE_ERROR` | The screenshot API rejected capture of the visible or specified tab, or the image is too large for the connection. |
+| `CAPTURE_ERROR` | The screenshot API rejected capture of the visible or specified tab, or a screenshot upload failed. |
 | `WINDOW_NOT_FOUND` | Firefox rejected a window ID as invalid. |
 | `INVALID_WINDOW_STATE` | Firefox rejected a requested window state. |
 | `INVALID_WINDOW_TYPE` | Firefox rejected a requested window type. |
@@ -1910,7 +2054,7 @@ request-error envelope.
 | `MONITOR_NOT_FOUND` | No request monitor exists with the supplied ID. |
 | `REQUEST_NOT_FOUND` | No captured request exists with the supplied ID. |
 | `PAGE_ERROR` | The content script reported an error for an action on the page; the message describes it. |
-| `WAIT_TIMEOUT` | A wait ended before it finished: no download completed, or the script never returned a value; the message says how long it waited and why. |
+| `WAIT_TIMEOUT` | A wait ended before its script returned a value; the message says why. |
 | `UPLOAD_ERROR` | A file upload referenced an unknown upload ID. |
 | `RECORDING_NOT_FOUND` | No screen recording exists with the supplied ID. |
 
