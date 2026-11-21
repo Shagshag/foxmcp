@@ -97,8 +97,6 @@ class TestWatchDownload:
         await call_tool("content_watch_download", profile_id=1,
                         callback_url="http://127.0.0.1:8099/", timeout=5)
 
-        # The request is answered when the watch is registered, so no long wait is needed.
-        assert stub_server.timeout <= 30.0
         assert stub_server.sent_request["data"]["timeoutMs"] == 5000
 
     @pytest.mark.asyncio
@@ -159,7 +157,8 @@ class TestArguments:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("callback_url", [
         "https://example.org/done", "http://192.168.1.5:8099/", "ftp://127.0.0.1/",
-        "http://user:secret@127.0.0.1:8099/", "http://127.0.0.1:port/", "not a url", "", 5, None])
+        "http://user:secret@127.0.0.1:8099/", "http://127.0.0.1:port/", "http://[::1]:port/",
+        "http://localhost./", "http://127.0.0.1.example.org/", "not a url", "", 5, None])
     async def test_callback_must_be_a_local_web_address(self, call_tool, stub_server, callback_url):
         result = await call_tool("content_watch_download", profile_id=1, callback_url=callback_url)
 

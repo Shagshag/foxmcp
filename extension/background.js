@@ -1769,6 +1769,10 @@ async function handleContentAction(id, action, data) {
           sendError(id, 'INVALID_PARAMETER', 'urlContains must be a string of 1 to 2048 characters');
           break;
         }
+        if (watchedId !== null && urlContains !== null) {
+          sendError(id, 'INVALID_PARAMETER', 'downloadId and urlContains cannot be used together');
+          break;
+        }
         if (watchedId !== null) {
           const [known] = await browser.downloads.search({ id: watchedId });
           if (!known || known.incognito) {

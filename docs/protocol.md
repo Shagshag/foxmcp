@@ -917,6 +917,8 @@ state is `timeout` the download fields are those of the download being followed 
 started, and `null` otherwise. The notice is a `POST` with `Content-Type: application/json` and no
 cookies; redirects are not followed and the receiver has 10 seconds to answer. A notice that cannot
 be delivered is lost. A watch is dropped, without a notice, when the connection to the server ends.
+`downloadId` and `urlContains` cannot be given together. Any port on this machine is accepted, so
+the notice, which holds a file path and a URL, goes to whatever service listens there.
 
 #### Wait
 `content.wait` runs a script in the tab every `intervalMs` until it returns something other than

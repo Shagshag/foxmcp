@@ -249,7 +249,9 @@ started. By default a watch follows the first download that starts after it was 
 follows that existing download (and reports at once when it has ended already). Firefox may ask
 the person to confirm a download first, and the watch includes that time. The `POST` carries no
 cookies, redirects are not followed and a receiver has 10 seconds to answer. A notice that
-cannot be delivered is lost, and a watch is dropped when the connection to the server ends.
+cannot be delivered is lost, and a watch is dropped when the connection to the server ends. Any
+port on this machine is accepted, so the notice, which holds a file path and a URL, goes to
+whatever service listens there.
 
 ### Web Request Monitoring
 - `requests_start_monitoring(profile_id, url_patterns, options=None, tab_id=None)` - Start monitoring web requests
