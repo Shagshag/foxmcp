@@ -1150,7 +1150,8 @@ async function tickRecording(recording) {
     await captureRecordingFrame(recording);
   } catch (error) {
     recording.error = error.message;
-    stopRecordingTimer(recording);
+    // The recording is over: free its socket now, not when someone calls stop.
+    closeRecording(recording);
   } finally {
     recording.busy = false;
   }
