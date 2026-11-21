@@ -119,7 +119,7 @@ foxmcp/
 │   ├── browser_profile.py # Per-profile sockets, replies and monitor ownership
 │   ├── browser_proxy.py   # Shared-port discovery and forwarding
 │   ├── profile_names.py   # Read-only Firefox metadata lookup
-│   └── mcp_tools.py       # The 47 MCP tool definitions
+│   └── mcp_tools.py       # The 49 MCP tool definitions
 ├── tests/           # Test suite (unit/, integration/, fixtures/)
 ├── scripts/         # install-xpi.sh, install-from-github.sh
 ├── venv/            # Python virtual environment
@@ -374,7 +374,7 @@ all advertised tools have smoke scenarios and all expected counts are updated.
 
 Before release, update affected totals in the install workflow, Windows installer,
 Python-package, shared-stdio container and archive smoke checks. For example,
-with 47 tools and 10 in the tabs group, enabling only its screenshot exposes 38.
+with 63 tools and 10 in the tabs group, enabling only its screenshot exposes 54.
 To check the default HTTP tool count by hand:
 
 ```bash

@@ -1905,6 +1905,115 @@ function describeDownload(item) {
 
 // Uploads in progress, by upload ID: one entry per file with its received chunks
 const pendingUploads = new Map();
+// Download watches in progress, by watch ID (see content.watch_download). Each holds a timer
+// and the ID of the download it follows, and is dropped when it ends or the connection does.
+const downloadWatches = new Map();
+
+// Where a notification may be sent: a web server on this machine. The extension can reach any
+// site, so it does not send the details of a download anywhere else.
+function callbackTarget(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch (error) {
+    throw new Error('callbackUrl must be a valid URL');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('callbackUrl must start with http:// or https://');
+  }
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
+    throw new Error('callbackUrl must point to this machine: 127.0.0.1, localhost or [::1]');
+  }
+  if (url.username || url.password) {
+    throw new Error('callbackUrl must not carry credentials');
+  }
+  return url;
+}
+
+function downloadWatchMatches(watch, item) {
+  if (item.incognito) return false;
+  if (watch.urlContains === null) return true;
+  return [item.url, item.finalUrl].some(
+    address => typeof address === 'string' && address.includes(watch.urlContains));
+}
+
+// One POST of the outcome. No cookies, no redirects and a time limit, so a receiver that moves
+// the request elsewhere or never answers cannot hold anything up. A receiver that cannot be
+// reached loses the notice: the watch is over either way.
+async function sendDownloadNotice(watch, state, item) {
+  const info = item ? describeDownload(item) : null;
+  const notice = {
+    watchId: watch.id, state,
+    downloadId: info ? info.id : null, path: info ? info.filename : null,
+    bytes: info ? info.bytes : null, url: info ? info.url : null,
+    error: info ? info.error : null
+  };
+  try {
+    const response = await fetch(watch.url.href, {
+      method: 'POST', redirect: 'error', credentials: 'omit', cache: 'no-store',
+      signal: AbortSignal.timeout(10000),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(notice)
+    });
+    if (!response.ok) {
+      console.warn(`Download watch ${watch.id}: receiver answered HTTP ${response.status}`);
+    }
+  } catch (error) {
+    console.warn(`Download watch ${watch.id}: receiver not reached: ${error.message}`);
+  }
+}
+
+function finishDownloadWatch(watch, state, item) {
+  // Only the first ending counts: a timeout and a change of state can arrive together.
+  if (!downloadWatches.delete(watch.id)) return;
+  clearTimeout(watch.timer);
+  sendDownloadNotice(watch, state, item);
+}
+
+async function checkDownloadWatch(watch) {
+  if (watch.followId === null) return;
+  try {
+    const [item] = await browser.downloads.search({ id: watch.followId });
+    if (item && item.state !== 'in_progress') finishDownloadWatch(watch, item.state, item);
+  } catch (error) {
+    console.warn(`Download watch ${watch.id}: cannot read download: ${error.message}`);
+  }
+}
+
+async function timeOutDownloadWatch(watch) {
+  let item = null;
+  if (watch.followId !== null) {
+    try {
+      [item] = await browser.downloads.search({ id: watch.followId });
+    } catch (error) {
+      item = null;
+    }
+  }
+  // A download that ended while the timer ran is reported as it ended, not as a timeout.
+  const ended = item && item.state !== 'in_progress';
+  finishDownloadWatch(watch, ended ? item.state : 'timeout', item || null);
+}
+
+function clearAllDownloadWatches() {
+  for (const watch of downloadWatches.values()) clearTimeout(watch.timer);
+  downloadWatches.clear();
+}
+
+browser.downloads.onCreated.addListener(item => {
+  for (const watch of downloadWatches.values()) {
+    if (watch.followId === null && downloadWatchMatches(watch, item)) {
+      watch.followId = item.id;
+      checkDownloadWatch(watch);
+    }
+  }
+});
+
+browser.downloads.onChanged.addListener(delta => {
+  if (!delta.state && !delta.error) return;
+  for (const watch of downloadWatches.values()) {
+    if (watch.followId === delta.id) checkDownloadWatch(watch);
+  }
+});
 
 // Content handlers
 async function handleContentAction(id, action, data) {
@@ -2120,33 +2229,55 @@ async function handleContentAction(id, action, data) {
         break;
       }
 
-      // Waits for a download that starts now (or started up to 3 seconds ago) to end. Every
-      // download in that window must have ended: one still in progress keeps the wait going,
-      // and the newest one that ended is the answer. An interrupted download ends too, and
-      // its error is in the result.
-      case 'content.wait_download': {
-        if (!Number.isInteger(data.timeoutMs) || data.timeoutMs < 1 || data.timeoutMs > 300000) {
-          sendError(id, 'INVALID_PARAMETER', 'timeoutMs must be an integer from 1 to 300000');
+      // Watches for a download and tells a receiver on this machine how it ended, so the caller
+      // can go on with something else meanwhile. The watch is registered before this answers, so a
+      // download that starts right after cannot be missed. It follows the first matching download
+      // that starts, or the one it was given, until it ends or the time is up.
+      case 'content.watch_download': {
+        let callback;
+        try {
+          callback = callbackTarget(data.callbackUrl);
+        } catch (callbackError) {
+          sendError(id, 'INVALID_PARAMETER', callbackError.message);
           break;
         }
-        const timeoutMs = data.timeoutMs;
-        const since = Date.now() - 3000;
-        const deadline = Date.now() + timeoutMs;
-        let found = null;
-        while (Date.now() < deadline) {
-          const recent = (await browser.downloads.search({ orderBy: ['-startTime'], limit: 10 }))
-            .filter(item => !item.incognito && Date.parse(item.startTime) >= since);
-          if (recent.length && recent.every(item => item.state !== 'in_progress')) {
-            found = recent[0];
+        if (!Number.isInteger(data.timeoutMs) || data.timeoutMs < 1 || data.timeoutMs > 3600000) {
+          sendError(id, 'INVALID_PARAMETER', 'timeoutMs must be an integer from 1 to 3600000');
+          break;
+        }
+        const watchedId = data.downloadId === undefined ? null : data.downloadId;
+        if (watchedId !== null && (!Number.isInteger(watchedId) || watchedId < 0)) {
+          sendError(id, 'INVALID_PARAMETER', 'downloadId must be a non-negative integer');
+          break;
+        }
+        const urlContains = data.urlContains === undefined ? null : data.urlContains;
+        if (urlContains !== null && (typeof urlContains !== 'string' || urlContains === ''
+            || urlContains.length > 2048)) {
+          sendError(id, 'INVALID_PARAMETER', 'urlContains must be a string of 1 to 2048 characters');
+          break;
+        }
+        if (watchedId !== null && urlContains !== null) {
+          sendError(id, 'INVALID_PARAMETER', 'downloadId and urlContains cannot be used together');
+          break;
+        }
+        if (watchedId !== null) {
+          const [known] = await browser.downloads.search({ id: watchedId });
+          if (!known || known.incognito) {
+            sendError(id, 'INVALID_PARAMETER', `No download with downloadId ${watchedId}`);
             break;
           }
-          await new Promise(resolve => setTimeout(resolve, 300));
         }
-        if (found) {
-          sendResponse(id, action, { download: describeDownload(found) });
-        } else {
-          sendError(id, 'WAIT_TIMEOUT', `No download finished within ${timeoutMs} ms`);
-        }
+        const watch = {
+          id: `watch-${crypto.randomUUID()}`, url: callback, downloadId: watchedId, urlContains,
+          followId: watchedId, timer: null
+        };
+        downloadWatches.set(watch.id, watch);
+        watch.timer = setTimeout(() => timeOutDownloadWatch(watch), data.timeoutMs);
+        sendResponse(id, action, {
+          watchId: watch.id, callbackUrl: callback.href, timeoutMs: data.timeoutMs
+        });
+        // A download that was given may have ended already.
+        if (watch.followId !== null) checkDownloadWatch(watch);
         break;
       }
 
@@ -2651,6 +2782,8 @@ function setupWebRequestListeners() {
 function clearAllMonitors(reason) {
   clearAllRecordings();
   const monitorCount = activeMonitors.size;
+
+  clearAllDownloadWatches();
 
   activeMonitors.clear();
   capturedRequests.clear();

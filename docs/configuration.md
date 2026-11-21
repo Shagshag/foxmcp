@@ -325,7 +325,7 @@ token, so treat them as proportions rather than exact counts:
 | `windows` | list, get, get_current, create, close, focus, update | 1,413 |
 | `requests` | start_monitoring, stop_monitoring, list_captured, get_content | 1,794 |
 | `navigation` | back, forward, reload, go_to_url | 668 |
-| `content` | get_text, get_html, execute_script, execute_predefined, load_file, snapshot, wait, click, type, press_key, hover, drag, scroll, select_option, fill_form, read_console, handle_dialogs, list_downloads, wait_download, upload_files | 5,227 plus listed scripts |
+| `content` | get_text, get_html, execute_script, execute_predefined, load_file, snapshot, wait, click, type, press_key, hover, drag, scroll, select_option, fill_form, read_console, handle_dialogs, list_downloads, watch_download, upload_files | 5,227 plus listed scripts |
 | `history` | query, get_recent, delete_item | 506 |
 | `debug` | websocket_status | 113 |
 

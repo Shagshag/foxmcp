@@ -117,7 +117,7 @@ See [configuration](configuration.md#script-injection-consent) for user behavior
 Protocol ID remains 3. Compared with released v1.7.0, every change adds a
 request (`content.snapshot`, `click`, `type`, `press_key`, `hover`, `drag`,
 `scroll`, `select_option`, `fill_form`, `wait`, `console`, `dialogs`,
-`list_downloads`, `wait_download`, `upload_*`, `capture_file_input`,
+`list_downloads`, `watch_download`, `upload_*`, `capture_file_input`,
 `tabs.record_start`, `record_stop`) or adds
 optional parameters (`rect`, `scale`, `ref`, `selector` and `padding` on the two
 capture actions). Existing parameters, defaults, responses and errors keep their
@@ -974,22 +974,44 @@ dialogs opened before the call or by `beforeunload`; `accepted` is not meaningfu
 
 It answers `{"mode": "accept", "dialogs": [{"type": "confirm", "message": "...", "accepted": true}]}`.
 #### Downloads
-`content.list_downloads` and `content.wait_download` use the `downloads` permission
-to report files the browser saved, so a client can tell whether an export worked.
+`content.list_downloads` and `content.watch_download` use the `downloads` permission to report
+files the browser saved, so a client can tell whether an export worked.
 
 ```json
 {"action": "content.list_downloads", "data": {"limit": 10}}
-{"action": "content.wait_download", "data": {"timeoutMs": 30000}}
+{"action": "content.watch_download", "data": {"callbackUrl": "http://127.0.0.1:8099/", "timeoutMs": 60000}}
 ```
 
-They answer `{"downloads": [...]}` and `{"download": {...}}`, where each item has `id`,
-`filename` (the absolute saved path), `url`, `state`, `bytes` (the file size, or the bytes
-received so far when it is unknown), `mime`, `startTime` and `error`. Downloads made in
-private browsing are left out. `limit` must be an integer from 1 to 100 and `timeoutMs` an
-integer from 1 to 300000, otherwise the answer is an `INVALID_PARAMETER` error.
-`content.wait_download` considers the downloads that started up to 3 seconds before the
-request: it waits while any of them is in progress and then answers the newest, finished or
-interrupted (with its `error`), or `WAIT_TIMEOUT`.
+`content.list_downloads` answers `{"downloads": [...]}`, where each item has `id`, `filename` (the
+absolute saved path), `url`, `state`, `bytes` (the file size, or the bytes received so far when it
+is unknown), `mime`, `startTime` and `error`. Downloads made in private browsing are left out.
+`limit` must be an integer from 1 to 100, otherwise the answer is an `INVALID_PARAMETER` error.
+
+`content.watch_download` answers `{"watchId", "callbackUrl", "timeoutMs"}` as soon as the watch is
+registered, which happens before the answer is sent, so a download that starts right afterwards is
+seen. The watch follows the first download that starts after that and matches the filters, or the
+one named by `downloadId`, until it is `complete` or `interrupted`, or `timeoutMs` has passed, and
+then sends one notice and ends:
+
+```json
+{"watchId": "watch-...", "state": "complete", "downloadId": 7, "path": "/home/u/Downloads/export.csv",
+ "bytes": 120, "url": "https://example.org/export.csv", "error": null}
+```
+
+`callbackUrl` is required: an `http://` or `https://` address on this machine (`127.0.0.1`,
+`localhost` or `[::1]`) without credentials. `timeoutMs` is an integer from 1 to 3600000.
+`downloadId` (a non-negative integer naming an existing download that is not a private-browsing
+one) and `urlContains` (a string of 1 to 2048 characters, tested against the download's URL and its
+final URL) are optional. A value that does not fit is an `INVALID_PARAMETER` error, and so is a
+`downloadId` that names no download. `downloadId` set to a download that has ended already sends
+its notice right after the answer. `state` is `complete`, `interrupted` or `timeout`; when the
+state is `timeout` the download fields are those of the download being followed if one had
+started, and `null` otherwise. The notice is a `POST` with `Content-Type: application/json` and no
+cookies; redirects are not followed and the receiver has 10 seconds to answer. A notice that cannot
+be delivered is lost. A watch is dropped, without a notice, when the connection to the server ends.
+`downloadId` and `urlContains` cannot be given together. Any port on this machine is accepted, so
+the notice, which holds a file path and a URL, goes to whatever service listens there.
+
 #### Wait
 `content.wait` runs a script in the tab every `intervalMs` until it returns something other than
 `null` or `undefined`, then answers that value. A returned promise is awaited, `false` and `0`

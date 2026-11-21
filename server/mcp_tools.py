@@ -2904,34 +2904,91 @@ class FoxMCPTools:
                 return f"Failed to list downloads: {response.get('data', {}).get('message', 'Unknown error')}"
             return downloads_text(response["data"].get("downloads", []))
 
-        @self._tool()
-        async def content_wait_download(profile_id: int, timeout: float = 30.0) -> str:
-            """Wait for a download to finish, for instance after clicking an export button,
-            and return where the file was saved
+        def download_callback_error(callback_url):
+            """Why callback_url cannot receive the notice, or None when it can"""
+            if not isinstance(callback_url, str):
+                return "callback_url must be a string"
+            try:
+                parts = urlsplit(callback_url)
+                parts.port  # a port that is not a number is an error
+            except ValueError:
+                return "callback_url must be a valid URL"
+            if parts.scheme not in ("http", "https"):
+                return "callback_url must start with http:// or https://"
+            if parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+                return "callback_url must point to this machine: 127.0.0.1, localhost or [::1]"
+            if parts.username or parts.password:
+                return "callback_url must not carry credentials"
+            return None
 
-            Firefox may ask the person to confirm a download first, and the wait
-            includes that time. A download that started up to 3 seconds before the call
-            counts, one still in progress keeps the wait going, and an interrupted one
-            ends it with its error. Private-browsing downloads are ignored.
+        @self._tool()
+        async def content_watch_download(
+            profile_id: int,
+            callback_url: str,
+            timeout: float = 60.0,
+            download_id: Optional[int] = None,
+            url_contains: Optional[str] = None
+        ) -> str:
+            """Watch for a download, for instance after clicking an export button, and have
+            Firefox POST how it ended to a receiver you run, so you can do other work meanwhile
+
+            This returns at once with a watch ID. The watch is registered before it
+            returns, so start the download after this call and a fast one cannot be
+            missed. Run a local HTTP server first (a background task that reports what
+            it receives), and pass its address as callback_url. When the download
+            completes or is interrupted, or the time is up, Firefox sends one POST with
+            a JSON body: {"watchId", "state", "downloadId", "path", "bytes", "url",
+            "error"}. state is "complete", "interrupted" or "timeout"; path is the
+            absolute path the file was saved to; the download fields are null when no
+            download started. Firefox may ask the person to confirm a download first,
+            and the watch includes that time. A receiver that cannot be reached loses
+            the notice, and a watch is dropped when the connection to the server ends.
+            Private-browsing downloads are ignored.
 
             Args:
-                timeout: (optional, a number above 0 and at most 300, default: 30) Seconds
-                    to wait at most
+                callback_url: An http:// or https:// address on this machine that takes
+                    the POST (127.0.0.1, localhost or [::1] only)
+                timeout: (optional, a number above 0 and at most 3600, default: 60)
+                    Seconds to watch at most
+                download_id: (optional, an integer) Follow this existing download,
+                    from content_list_downloads, instead of a new one
+                url_contains: (optional, a non-empty string) Only follow a new download
+                    whose URL contains this text. Not together with download_id
             """
+            failure = "Failed to watch for a download: "
+            problem = download_callback_error(callback_url)
+            if problem:
+                return failure + problem
             if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-                    or not math.isfinite(timeout) or not 0 < timeout <= 300):
-                return "Failed to wait for a download: timeout must be a number above 0 and at most 300"
+                    or not math.isfinite(timeout) or not 0 < timeout <= 3600):
+                return failure + "timeout must be a number above 0 and at most 3600"
+            if download_id is not None and (
+                    isinstance(download_id, bool) or not isinstance(download_id, int)
+                    or download_id < 0):
+                return failure + "download_id must be a non-negative integer"
+            if url_contains is not None and (
+                    not isinstance(url_contains, str) or not 1 <= len(url_contains) <= 2048):
+                return failure + "url_contains must be a string of 1 to 2048 characters"
+            if download_id is not None and url_contains is not None:
+                return failure + "download_id and url_contains cannot be used together"
+            data = {"callbackUrl": callback_url, "timeoutMs": max(1, int(timeout * 1000))}
+            if download_id is not None:
+                data["downloadId"] = download_id
+            if url_contains is not None:
+                data["urlContains"] = url_contains
             response = await self._send(profile_id, {
                 "id": str(uuid.uuid4()), "type": "request",
-                "action": "content.wait_download",
-                "data": {"timeoutMs": max(1, int(timeout * 1000))},
+                "action": "content.watch_download", "data": data,
                 "timestamp": datetime.now().isoformat()
-            }, timeout=timeout + 15.0)
+            })
             if "error" in response:
-                return f"Failed to wait for a download: {response['error']}"
+                return f"{failure}{response['error']}"
             if response.get("type") == "response" and "data" in response:
-                return downloads_text([response["data"].get("download")])
-            return f"Failed to wait for a download: {response.get('data', {}).get('message', 'Unknown error')}"
+                result = response["data"]
+                return (f"Watching for a download (watch {result.get('watchId')}). "
+                        f"The outcome will be POSTed to {result.get('callbackUrl')} as JSON "
+                        f"when it ends, or after {timeout:g} seconds.")
+            return f"{failure}{response.get('data', {}).get('message', 'Unknown error')}"
 
         # Hover Tool
         @self._tool()

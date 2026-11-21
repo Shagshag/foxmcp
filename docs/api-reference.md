@@ -274,7 +274,7 @@ scheduling can delay timeout delivery. See the
 - `content_read_console(profile_id, tab_id, level=None, pattern=None, limit=50, clear=False)` - Read the page's console output and uncaught errors, filtered by `level`, `pattern` (a case-sensitive substring) and `limit` (1 to 500, the newest entries); `clear` forgets all entries after reading. Recording starts with the first call on a page and restarts when the tab navigates. At most 500 entries of 2,000 characters are kept, and what a page logs (including secrets or personal data) is returned as is
 - `content_handle_dialogs(profile_id, tab_id, mode, prompt_text=None)` - Answer the page's `alert`, `confirm` and `prompt`: `accept`, `dismiss`, `off` (restore the native dialogs) or `log` (only list the dialogs shown while accept or dismiss was on). `prompt_text` (a string, only with `accept`) is what a prompt answers with. Careful: `accept` answers OK to every `confirm`, such as "Delete this account?". It covers the top frame only, lasts until the tab navigates, and does not cover dialogs opened before the call or by `beforeunload`; at most the last 100 dialogs are kept
 - `content_list_downloads(profile_id, limit=10)` - List recent downloads, newest first, with the absolute saved path, URL, state and size. `limit` is an integer from 1 to 100. Private-browsing downloads are left out. `bytes` is the file size, or the bytes received so far when the size is unknown
-- `content_wait_download(profile_id, timeout=30)` - Wait for a download to finish, e.g. after an export button, and return where it was saved; includes the time Firefox waits for the person to confirm it. `timeout` is a number of seconds above 0 and at most 300. Downloads that started up to 3 seconds before the call count, one still in progress keeps the wait going, and an interrupted one ends it with its error. Private-browsing downloads are ignored
+- `content_watch_download(profile_id, callback_url, timeout=60, download_id=None, url_contains=None)` - Watch for a download, e.g. after an export button, and have Firefox POST how it ended to a receiver you run, so you can do other work meanwhile. It returns a watch ID at once, and the watch is registered before it does, so a download started afterwards cannot be missed. `callback_url` is an `http://` or `https://` address on this machine (`127.0.0.1`, `localhost` or `[::1]`). `timeout` is a number above 0 and at most 3600. `download_id` follows an existing download from `content_list_downloads`; `url_contains` only follows a new download whose URL contains the text; not together. See [download notices](#download-notices)
 - `content_hover(profile_id, tab_id, ref=None, selector=None)` - Move the pointer onto an element, as hover menus need
 - `content_drag(profile_id, tab_id, ref=None, selector=None, to_ref=None, to_selector=None)` - Drag one element onto another (HTML5 drag and drop events plus mouse events)
 - `content_scroll(profile_id, tab_id, ref=None, selector=None, direction="down", amount=None)` - Scroll an element into view, or the page by screens (3 or less) or pixels; `top` and `bottom` go to the ends
@@ -282,6 +282,28 @@ scheduling can delay timeout delivery. See the
 - `content_fill_form(profile_id, tab_id, fields)` - Fill several fields at once: `fields` is a list of `{"ref" or "selector", "value"}`; inputs are typed, selects choose an option, checkboxes take true or false
 - `content_press_key(profile_id, tab_id, key, ref=None, selector=None)` - Press a key on an element, or on the focused one
 - `content_upload_files(profile_id, tab_id, path, ref=None, selector=None, trigger_ref=None, trigger_selector=None)` - Put a local file or folder on a file input; a trigger fills the input a button would open
+
+#### Download notices
+`content_watch_download` returns at once with a watch ID, and Firefox sends the outcome later,
+as one `POST` with `Content-Type: application/json` to `callback_url`. Run the receiver first,
+as a background task that tells you what it gets, then call the tool, then start the download:
+
+```json
+{"watchId": "watch-...", "state": "complete", "downloadId": 7,
+ "path": "C:\\Users\\you\\Downloads\\export.csv", "bytes": 120,
+ "url": "https://example.org/export.csv", "error": null}
+```
+
+`state` is `complete`, `interrupted` (with the reason in `error`) or `timeout`. After a
+timeout the download fields describe the download that was still going, or are `null` when none
+started. By default a watch follows the first download that starts after it was registered; with
+`url_contains` it skips downloads whose URL does not contain the text, and with `download_id` it
+follows that existing download (and reports at once when it has ended already). Firefox may ask
+the person to confirm a download first, and the watch includes that time. The `POST` carries no
+cookies, redirects are not followed and a receiver has 10 seconds to answer. A notice that
+cannot be delivered is lost, and a watch is dropped when the connection to the server ends. Any
+port on this machine is accepted, so the notice, which holds a file path and a URL, goes to
+whatever service listens there.
 
 ### Web Request Monitoring
 - `requests_start_monitoring(profile_id, url_patterns, options=None, tab_id=None)` - Start monitoring web requests
