@@ -7,13 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Direct binary screenshot uploads to the requesting MCP frontend, allowing
+  images beyond the WebSocket payload limit. Files stream to disk and replace
+  destinations only after upload and capture acknowledgement succeed.
+- Capture filters for HTTP methods, resource types, minimum status and failures,
+  plus a strict `requests_list_captured` limit and returned-request count.
+- A `redirects` array of follow-on requests in captured summaries and content
+  reads, with URL, method, status, destination and failure. Original URL/method
+  and initial response status/destination stay at the top level.
+
 ### Changed
+
+- Screenshot control requests require an upload grant. Inline data-URL replies
+  and their compatibility path are removed; the extension replies only after
+  the receiver acknowledges completed reception.
+- Predefined `.py` scripts use the server's Python interpreter on every platform.
+  Readable Python files are discoverable and runnable without a shebang or
+  executable permission; shell script behavior is preserved.
 
 - Enforce fixed tool counts and complete archive tool coverage during release
   rehearsals and tagged releases, while ordinary CI keeps functional checks
   running without blocking tool additions on catalog totals.
 
 ### Fixed
+
+- Return capture errors for screenshot upload deadlines on Python 3.10 as well
+  as newer runtimes, preserving destination files and transfer cleanup.
+- Select redirected request chains by their initial URL, method and resource
+  type, independently of other monitors. Capture network events once and keep
+  response content associated with the final observed hop.
 
 - Validate monitoring capture options, reject unsupported fields, honor the
   request-body toggle and isolate body policies across overlapping monitors.

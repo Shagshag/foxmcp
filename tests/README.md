@@ -61,6 +61,56 @@ through MCP, checking overlapping monitors with different byte/type policies,
 disabled request/response capture, complete page delivery, raw-protocol
 validation, monitor membership and reads after stop.
 
+`integration/test_request_capture_filters.py` verifies capture selection and
+listing limits through real Firefox and MCP. It checks original response
+metadata, empty and one/two/three-entry `redirects` arrays, 302/303 method rewriting, 307/308 preservation, final content, redirect failures
+and loops, initial-URL matching, stopped reads, raw option rejection and method
+selection independent of overlapping monitors.
+
+#### Wait execution lifecycle
+
+`integration/test_content_wait_lifecycle.py` uses real Firefox and MCP HTTP to
+verify that an unresolved wait returns `WAIT_TIMEOUT` without retaining a gate
+job, then permits a consent-policy change and a script in another tab. It also
+checks first-attempt execution deadlines with consent off/on, queued approval
+expiry without injection, and preservation of scope, values and script errors.
+
+A temporary custom XPI adds gate inspection and remembered-decision controls;
+it delegates all execution/deadline logic to the production gate. The shared
+fixture isolates this extension from cached profiles. Normal packaged artifacts
+are not modified. These tests exercise remembered approvals and queue expiry,
+not native interaction with the approval popup.
+
+```bash
+FIREFOX_PATH=/path/to/firefox-developer-edition/firefox \
+  venv/bin/python -m pytest tests/integration/test_content_wait_lifecycle.py -v
+```
+
+Run `make package` first. The main timeout regression fails on the merged PR's
+background-only race because its executing gate job remains after the reply.
+
+#### Discarded-tab content reads
+
+`integration/test_discarded_tabs_end_to_end.py` exercises text/HTML reads through
+MCP HTTP and real Firefox after confirming the target tab is discarded. It checks
+one reload for concurrent readers, successful reads after a second discard,
+no reload for an already loaded tab, and preservation of the inactive tab and
+the previously active tab.
+
+The module overrides `firefox_extension` to create a temporary XPI with a test-only
+background companion. It delegates to the production functions and real Firefox
+APIs, counts reload calls, and holds a reload until both readers reach the helper.
+Counting HTTP requests alone would miss duplicate calls coalesced by Firefox.
+The packaged XPI and production scripts remain unchanged. A custom extension
+automatically disables profile-cache reads/writes, isolating the test controls.
+
+```bash
+FIREFOX_PATH=/path/to/firefox-developer-edition/firefox \
+  venv/bin/python -m pytest tests/integration/test_discarded_tabs_end_to_end.py -v
+```
+
+Run `make package` first, as for the other Firefox tests.
+
 #### Startup composition coverage
 
 `unit/test_server_composition.py` checks the source roles documented in the
@@ -95,6 +145,28 @@ probe. This covers network resets during shared-worker teardown.
 The probe treats network transport failures as temporary unavailability while
 continuing to reject completed incompatible responses. Existing shared-instance
 and container lifecycle integration tests cover normal worker shutdown/restart.
+
+### Screenshot crop, scrolling and display density
+
+`integration/test_browser_functionality.py` exercises screenshot regions through
+the real MCP HTTP transport and Firefox extension using a local fixture. It
+checks document-relative pixels after scrolling, cropped dimensions at DPR 1
+and 2 with omitted/explicit scales, and uncropped dimensions. It also
+checks that a noisy PNG above 1 MiB saves identically over HTTP and shared
+stdio, returns only metadata on the real control socket, preserves preview
+output and leaves the profile usable. DPR changes affect only disposable profiles.
+
+`unit/test_upload_transfer.py` exercises actual HTTP grants, byte integrity,
+one-use/expiry rules, concurrent profiles/requests, interrupted bodies,
+cancellation/shutdown, atomic output preservation and a 32 MiB upload with a
+Python allocation peak below 4 MiB. `integration/test_multiple_profiles.py`
+checks concurrent uploads to independent HTTP/shared-stdio frontends through
+the real browser proxy with simulated profiles. `test_extension_settings.py`
+runs the production upload function in Firefox to verify fetch credentials,
+redirect refusal, metadata and HTTP-error handling. Both actual capture actions
+are also checked against a receiver that deliberately delays completion: no
+control reply is sent before the receiver acknowledges the finished upload.
+Missing grants and legacy inline replies are refused.
 
 ## Source-installation smoke checks
 
@@ -141,7 +213,7 @@ Selected test modules, including local-file coverage:
 | `test_tab_move.py` | `tabs_move`'s request and result, and the window scoping on `tabs_list` |
 | `test_protocol.py` | Message structure, JSON serialization, error codes |
 | `test_window_handlers.py` | Window action handlers |
-| `test_predefined_script_logging.py` | Predefined script audit/validation and raw/predefined script response timeouts |
+| `test_predefined_script_logging.py` | Predefined script audit/validation, portable Python generators without execute permission, literal arguments and raw/predefined script response timeouts |
 | `test_request_monitoring.py` | Web request capture logic |
 | `test_ping_pong.py` | Ping-pong protocol |
 | `test_connection_versions.py` | Version parsing and advisory diagnostics; per-profile connection tests are in `test_server.py` |
@@ -158,8 +230,10 @@ Selected test modules:
 |---|---|
 | `test_browser_connection_versions.py` | Real Firefox hello plus actual background/popup scripts: protocol-3 registration/refusal, release mismatch, stale sockets and edit-preserving refresh |
 | `test_script_consent.py` | Actual consent-controller source, queue/deadline/target behavior and real-extension policy isolation |
+| `test_content_wait_lifecycle.py` | MCP HTTP/Firefox wait deadlines, queued approval expiry, gate cleanup, subsequent policy/script progress and result/error preservation |
 | `test_extension_settings.py` | Actual background, Popup/Options scripts and HTML: validation, autosave, reset, storage failures, constant retries, stale timers, profile registration/errors and live status |
 | `test_file_loading.py` | File integrity and metadata, predefined input assignment, events, empty files, tab isolation, expiry and navigation during a transfer |
+| `test_discarded_tabs_end_to_end.py` | Real discard/reload through MCP HTTP: text/HTML, concurrent reload coalescing, rediscard, loaded reads and inactive/active-tab preservation |
 | `test_window_management.py` | Window creation, focus switching, cross-window tabs |
 | `test_history_management.py` | History query, recent, time ranges, concurrency |
 | `test_mcp_integration.py` | FastMCP tool init and call handling |
@@ -340,6 +414,11 @@ async def test_browser_feature(server_with_extension):
 The fixture is a `FixtureResult` object with keyed access to `server`, `firefox`,
 `test_port` and `mcp_port`. It is not a dictionary and cannot be unpacked with
 `**`.
+
+For tests needing a custom XPI, override the `firefox_extension` fixture to return
+its path. `server_with_extension` passes it to `FirefoxTestManager(extension_path=...)`
+and uses an uncached disposable profile. The default fixture returns `None` and
+continues using the packaged XPI with the usual profile cache.
 
 ### Adding an MCP client
 

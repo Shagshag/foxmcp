@@ -31,6 +31,7 @@ def test_real_process_preserves_arguments(tmp_path, extension):
 @pytest.mark.parametrize('name,args,marker', [
     ('set-file-input.py', ['example-file', '#upload'], 'DataTransfer'),
     ('dom-summarize.sh', ['onscreen', 'withpos'], 'traverseDOM'),
+    ('read-console.py', ['--level', 'error', '--limit', '5'], 'foxmcpConsole'),
 ])
 async def test_bundled_script_reaches_browser_transport(monkeypatch, name, args, marker):
     class Browser:

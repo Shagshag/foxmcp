@@ -646,7 +646,11 @@ Colours are `blue`, `cyan`, `grey`, `green`, `orange`, `pink`, `purple`, `red` a
   "data": {
     "windowId": 1,
     "format": "png",
-    "quality": 90
+    "quality": 90,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "req_007b"
+    }
   },
   "timestamp": "2025-09-03T12:00:00.000Z"
 }
@@ -659,10 +663,14 @@ Colours are `blue`, `cyan`, `grey`, `green`, `orange`, `pink`, `purple`, `red` a
   "type": "response",
   "action": "tabs.captureVisibleTab",
   "data": {
-    "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
     "format": "png",
     "quality": 90,
-    "windowId": 1
+    "windowId": 1,
+    "upload": {
+      "requestId": "req_007b",
+      "size": 70,
+      "type": "image/png"
+    }
   },
   "timestamp": "2025-09-03T12:00:01.000Z"
 }
@@ -670,8 +678,7 @@ Colours are `blue`, `cyan`, `grey`, `green`, `orange`, `pink`, `purple`, `red` a
 
 #### Capture Screenshot of One Tab
 `tabs.captureVisibleTab` can only see the tab a window is showing. This one captures a given tab
-wherever it is, a background tab included, and does not switch to it. An extension without it
-answers `UNKNOWN_ACTION`.
+wherever it is, a background tab included, and does not switch to it.
 
 **Request:**
 ```json
@@ -682,7 +689,11 @@ answers `UNKNOWN_ACTION`.
   "data": {
     "tabId": 123,
     "format": "png",
-    "quality": 90
+    "quality": 90,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "req_007c"
+    }
   },
   "timestamp": "2025-09-03T12:00:00.000Z"
 }
@@ -695,21 +706,141 @@ answers `UNKNOWN_ACTION`.
   "type": "response",
   "action": "tabs.captureTab",
   "data": {
-    "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
     "format": "png",
     "quality": 90,
-    "tabId": 123
+    "tabId": 123,
+    "upload": {
+      "requestId": "req_007c",
+      "size": 70,
+      "type": "image/png"
+    }
   },
   "timestamp": "2025-09-03T12:00:01.000Z"
 }
 ```
 
-`tabId` must be a non-negative integer (`INVALID_PARAMETER` otherwise). A tab
-that does not exist or cannot be captured is a `CAPTURE_ERROR`.
+#### Screenshot regions, scale and size limits
+
+Both `tabs.captureTab` and `tabs.captureVisibleTab` accept `rect` and `scale` in
+the request's `data` object. `rect` contains integer `x`, `y`, `width` and `height`
+in CSS pixels from the document's top-left corner. Scrolling does not change the
+selected region. `x` and `y` must be at least 0; `width` and `height` must be
+greater than 0. `scale` must be finite and satisfy `0 < scale <= 4`. Invalid
+rectangles or scales return `INVALID_PARAMETER`.
+
+These action/data excerpts request a 400 x 200 CSS-pixel crop at scale 0.5,
+producing a 200 x 100 pixel image:
+
+```json
+{
+  "action": "tabs.captureTab",
+  "data": {
+    "tabId": 123,
+    "format": "png",
+    "quality": 90,
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 400,
+      "height": 200
+    },
+    "scale": 0.5,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "originating-tool-request-id"
+    }
+  }
+}
+```
+
+```json
+{
+  "action": "tabs.captureVisibleTab",
+  "data": {
+    "windowId": 1,
+    "format": "png",
+    "quality": 90,
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 400,
+      "height": 200
+    },
+    "scale": 0.5,
+    "upload": {
+      "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+      "requestId": "originating-tool-request-id"
+    }
+  }
+}
+```
+
+| Request | Default scale when omitted |
+|---|---|
+| With `rect` | `1`, independent of display density |
+| Without `rect` | The target tab's device pixel ratio (DPR) |
+
+Both capture actions require an `upload` grant, with and without a filename.
+A missing or invalid grant returns `INVALID_PARAMETER` before capture:
+
+```json
+"upload": {
+  "url": "http://127.0.0.1:49152/uploads/<opaque-one-use-token>",
+  "requestId": "originating-tool-request-id"
+}
+```
+
+The extension uploads binary `image/png` or `image/jpeg` bytes with `PUT`, an
+explicit Content-Length and `X-FoxMCP-Request-Id` matching the stable grant ID.
+The upload ID is carried in data because `/proxy` remaps outer request IDs.
+The receiver belongs to the originating MCP frontend, not the browser owner.
+No filename or profile ID is sent to the extension for the transfer.
+
+Cookies are omitted, redirects refused and fetch is limited to 110 seconds.
+URLs must target `http://127.0.0.1:<port>/uploads/<token>` without credentials,
+queries or fragments. The receiver accepts one transfer, validates its expected
+MIME/correlation ID, streams to disk and returns HTTP 204 only after the entire
+Content-Length has arrived and the staging file is closed. Grants expire after
+120 seconds; malformed or unauthorized requests cannot consume them. Claimed grants cannot be retried.
+Partial/expired/cancelled transfers are discarded, with no WebSocket-sized cap.
+The listener grants no page CORS access.
+
+Only after HTTP 204 does the extension send its normal capture response with
+`upload` metadata; format/quality and tab/window metadata are unchanged. The
+extension awaits the receiver's acknowledgement before sending this reply:
+
+```json
+"data": {
+  "upload": {"requestId": "originating-tool-request-id", "size": 2000000, "type": "image/png"},
+  "format": "png", "quality": 90, "tabId": 4
+}
+```
+
+The tool requires both successful reception and this matching acknowledgement
+before publishing the file or rendering its existing preview/size result.
+Upload failure returns `CAPTURE_ERROR`. Files are staged and published by the
+frontend, never written to arbitrary paths by the extension.
+
+Inline `dataUrl` responses and the old data-URL size guard are removed. The
+server requires a matching upload acknowledgement and will not decode a legacy
+inline reply. For `tabs.captureTab`, `tabId` must be a non-negative integer
+(`INVALID_PARAMETER` otherwise). Missing/uncapturable tabs and failed uploads
+return `CAPTURE_ERROR`. See the [MCP tool](api-reference.md#screenshots)
+and [transfer ownership](architecture.md#browser-uploads).
+
+Use matching server and extension builds. The required upload contract shares
+the next release's protocol-ID increment from 3 to 4; release preparation must
+enforce the new ID on both peers. See
+[release preparation](development.md#release-process).
 
 ### 3. Tab Content
 
 #### Get Page Content
+`content.get_text` and `content.get_html` first reload a discarded tab (one Firefox restored
+or unloaded) and wait up to 15 seconds for it to load, so the page runs as if the person had
+opened the tab. If it does not finish loading in time the request fails with an `API_ERROR`
+(`Content API error: The tab was discarded and did not finish loading in time`).
+
 **Request:**
 ```json
 {
@@ -750,24 +881,34 @@ that does not exist or cannot be captured is a `CAPTURE_ERROR`.
 }
 ```
 
-#### Console
-`content.console` returns what the page has logged since the first request, and
-uncaught errors and unhandled promise rejections (level `uncaught`, also returned for
-`level: "error"`). The first request on a page only starts recording, answering
-`{"started": true, "entries": []}`, because wrapping `console` everywhere from the
-start would change stack locations on pages nobody is debugging. At most 500 entries
-are kept, and the recording ends when the page navigates.
+#### Wait
+`content.wait` runs a script in the tab every `intervalMs` until it returns something other than
+`null` or `undefined`, then answers that value. A returned promise is awaited, `false` and `0`
+count as values, and the value must be JSON-compatible. The script goes through the same consent
+gate as `content.execute_script`, so with script consent on the first run may wait for the
+person to approve, and later runs reuse the answer. The first attempt has a 90-second
+deadline including approval; after it finishes, later attempts share the `timeoutMs`
+polling budget. A script that throws, or
+returns a value that cannot be cloned (a DOM node, a function), ends the wait with
+`SCRIPT_ERROR`; a tab that no longer exists is an `API_ERROR`; a tab that cannot be scripted yet (loading, navigating) is tried
+again until the limit; consent errors are the ones `content.execute_script` gives.
 
 ```json
-{"action": "content.console", "data": {"tabId": 123, "level": null, "pattern": null, "limit": 50, "clear": false}}
-{"type": "response", "data": {"started": false, "entries": [{"level": "error", "message": "boom"}, {"level": "uncaught", "message": "x is not defined (https://example.org/:1:9)"}]}}
+{"action": "content.wait", "data": {"tabId": 123, "script": "document.querySelector('#done') ? true : null", "timeoutMs": 10000, "intervalMs": 200}}
+{"type": "response", "data": {"result": true, "waitedMs": 420, "attempts": 3, "url": "https://example.org/done"}}
 ```
 
-`level` is one of `log`, `info`, `warn`, `error` or `debug`, `pattern` is a case-sensitive
-substring of the message, `limit` (1 to 500) keeps the newest entries, and `clear` empties the
-whole buffer, not only the entries returned; it is ignored when `started` is true. A value of
-the wrong type or range is a `PAGE_ERROR`. Entries hold whatever the page logged, which can
-include secrets or personal data, and are returned unchanged.
+`timeoutMs` is an integer from 1 to 120000 and `intervalMs` from 100 to 5000, otherwise the answer
+is an `INVALID_PARAMETER` error. `WAIT_TIMEOUT` says whether the script kept returning `null`, a
+run did not finish, or the tab could not be scripted.
+
+The gate owns attempt deadlines, including time spent awaiting approval. An
+expired queued attempt is cancelled before injection. For an executing attempt,
+the injected wrapper stops awaiting the script promise at the deadline, allowing
+Firefox's execution and the gate job to settle before a later consent-policy
+change. Firefox timer scheduling can delay delivery. Timeout does
+not stop synchronous JavaScript, cancel an arbitrary caller promise or undo its
+side effects. Scripts must remain safe to run repeatedly.
 
 #### Execute Script
 **Request:**
@@ -1450,7 +1591,11 @@ format only.
       "capture_request_bodies": true,
       "capture_response_bodies": true,
       "max_body_size": 50000,
-      "content_types_to_capture": ["application/json", "text/plain"]
+      "content_types_to_capture": ["application/json", "text/plain"],
+      "methods": [],
+      "resource_types": [],
+      "min_status": null,
+      "failed_only": false
     }
   },
   "timestamp": "2026-08-14T12:00:00.100Z"
@@ -1461,6 +1606,19 @@ format only.
 extension normalize omitted options to the defaults above. Both body toggles must
 be booleans, `max_body_size` must be a positive integer, and content-type patterns
 must be an array of nonempty strings (an empty array selects all supported text).
+
+`options` may also carry capture filters: `methods` and `resource_types` (arrays of nonempty
+strings; methods are matched case-insensitively and stored in upper case), `min_status` (`null`
+or an integer from 100 to 599) and `failed_only` (a boolean). They default to no filtering, and
+the answer's `options` always lists all of them. The server sends a filter only when it is set,
+because an extension from before the filters rejects options it does not know with
+`INVALID_PARAMETER`. A request that does not match `methods` or `resource_types` is not captured;
+`min_status` and `failed_only` are checked when the request completes, and a request that fails
+them is not listed. Development ID remains 3 until the agreed release-preparation
+step; the next release requires ID 4 for the accumulated API changes, including
+redirect-chain responses (including the redirects-only array and separate
+original response metadata) and initial-hop selection. See
+[unreleased compatibility requirements](../RELEASES.md#unreleased-compatibility-requirements).
 Unknown fields, including `sensitive_headers`, and invalid values are rejected;
 the extension returns `INVALID_PARAMETER` before starting a monitor.
 
@@ -1469,6 +1627,22 @@ including overlapping and stopped monitors. `requests.get_content` returns
 `MONITOR_NOT_FOUND` for an unknown monitor and `REQUEST_NOT_FOUND` if the request
 was not captured by that monitor. The global response-body cache retains up to
 200 monitor/request projections; each uses its own size and content-type rules.
+
+#### Redirect metadata
+
+Both list entries and `requests.get_content` data contain `redirects`, ordered
+follow-on requests excluding the original. Each object has `url`, `method` and
+optional `status_code`, `redirect_url` and `error`. A request without redirects
+has an empty array. Three redirects produce three array entries.
+
+Top-level `url` and `method` identify the original request; `initial_status_code`
+and `initial_redirect_url` expose its observed response status and destination.
+Unavailable initial response fields are omitted. Top-level `status_code` and
+`error` reflect the terminal result. Initial metadata used for URL/method/type/tab
+selection is retained independently of capture acceptance until completion or
+failure. Internal hop tracking includes the original, while the public array
+contains only follow-on requests. Completed metadata follows existing retention.
+See [redirect semantics and content association](web-request-monitoring.md#redirect-chains).
 
 #### List Captured
 **Request:**
@@ -1502,7 +1676,9 @@ was not captured by that monitor. The global response-body cache retains up to
         "duration_ms": 118,
         "timestamp": "2026-08-14T12:00:31.221Z",
         "tab_id": 7,
-        "type": "xmlhttprequest"
+        "type": "xmlhttprequest",
+        "initial_status_code": 200,
+        "redirects": []
       }
     ]
   },
@@ -1536,6 +1712,11 @@ A request that failed also carries `error`, Firefox's network error string.
   "action": "requests.get_content",
   "data": {
     "request_id": "1234",
+    "url": "https://example.org/api/items",
+    "method": "GET",
+    "status_code": 200,
+    "initial_status_code": 200,
+    "redirects": [],
     "request_headers": {},
     "response_headers": {"content-type": "application/json"},
     "request_body": {
@@ -1655,14 +1836,14 @@ request-error envelope.
 | `UNKNOWN_ACTION` | The action namespace or operation is unsupported. |
 | `INVALID_PARAMETER` | An action field is missing or has an invalid type/value. |
 | `UNSUPPORTED_API` | This Firefox lacks the API or permission required for the action. |
-| `CAPTURE_ERROR` | The screenshot API rejected capture of the visible or specified tab. |
+| `CAPTURE_ERROR` | The screenshot API rejected capture of the visible or specified tab, or a screenshot upload failed. |
 | `WINDOW_NOT_FOUND` | Firefox rejected a window ID as invalid. |
 | `INVALID_WINDOW_STATE` | Firefox rejected a requested window state. |
 | `INVALID_WINDOW_TYPE` | Firefox rejected a requested window type. |
 | `INVALID_FOLDER_ID` | The bookmark-list folder lookup failed. |
 | `MONITOR_NOT_FOUND` | No request monitor exists with the supplied ID. |
 | `REQUEST_NOT_FOUND` | No captured request exists with the supplied ID. |
-| `PAGE_ERROR` | The content script reported an error for an action on the page; the message describes it. |
+| `WAIT_TIMEOUT` | A wait ended before its script returned a value; the message says why. |
 
 ### Script execution and consent errors
 

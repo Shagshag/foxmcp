@@ -19,6 +19,7 @@ import shlex
 import sys
 import time
 import json
+import math
 import base64
 from datetime import datetime
 from typing import Annotated, Dict, Any, Optional, List, TypedDict, Union
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class MonitorOptions(BaseModel):
-    """Validated capture policy, separate from filters used when listing requests."""
+    """Validated capture policy: body capture settings and the filters that narrow capture."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -40,6 +41,13 @@ class MonitorOptions(BaseModel):
     max_body_size: int = Field(default=50000, gt=0)
     content_types_to_capture: List[Annotated[str, Field(min_length=1)]] = Field(
         default_factory=lambda: ["application/json", "text/plain"])
+    # Capture filters. An empty list or None selects everything. They are sent to the
+    # extension only when set (see requests_start_monitoring), so an extension that
+    # does not know them keeps working with the defaults.
+    methods: List[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+    resource_types: List[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+    min_status: Optional[int] = Field(default=None, ge=100, le=599)
+    failed_only: bool = False
 
 # Longest a single script argument may appear in the log before being cut short.
 #
@@ -76,20 +84,16 @@ SCRIPT_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9._-]+$')
 
 
 def predefined_script_command(script_path):
-    """Choose a native Windows interpreter without evaluating a shell command.
+    """Use the server's Python for .py files and Git Bash for Windows .sh files.
 
-    This belongs here because content_execute_predefined launches the scripts.
-    Windows cannot launch .py/.sh files through their shebang like Linux/macOS,
-    so it needs an explicit interpreter. The guard leaves POSIX launches alone.
-    POSIX keeps its executable/shebang behaviour. On Windows, prefer Git's Bash
-    over a bare bash.exe lookup, which can select the WSL launcher instead.
+    Other POSIX scripts keep executable/shebang behavior. On Windows, prefer
+    Git's Bash over a bare bash.exe lookup, which can select the WSL launcher.
     """
-    if sys.platform != 'win32':
-        return [script_path]
     extension = os.path.splitext(script_path)[1].lower()
     if extension == '.py':
-        # Reuses the server's environment and dependencies
         return [sys.executable, script_path]
+    if sys.platform != 'win32':
+        return [script_path]
     if extension != '.sh':
         return [script_path]
 
@@ -119,6 +123,12 @@ def predefined_script_command(script_path):
         'Shell scripts on Windows require Git Bash. Install Git for Windows '
         'or set FOXMCP_BASH to the absolute path to its bash.exe, then restart FoxMCP.'
     )
+
+
+def predefined_script_accessible(script_path: str) -> bool:
+    """Accept readable regular Python files or executable other generators."""
+    permission = os.R_OK if os.path.splitext(script_path)[1].lower() == '.py' else os.X_OK
+    return os.path.isfile(script_path) and os.access(script_path, permission)
 
 
 def run_predefined_script(command, args_list):
@@ -218,7 +228,7 @@ def describe_predefined_scripts(scripts_dir):
     """The script listing appended to content_execute_predefined's description
 
     scripts_dir is FOXMCP_EXT_SCRIPTS, or None when it is unset. Lists the files
-    the tool would run - executable regular files directly in the directory with
+    the tool would run - readable Python or executable other regular files with
     an allowed name - except dot files, one line each from read_script_header.
     Scripts with nothing to say for themselves share one line of names. When
     there is nothing to list, says why, so an agent does not spend a call to
@@ -242,7 +252,7 @@ def describe_predefined_scripts(scripts_dir):
     for name in names:
         path = os.path.join(scripts_dir, name)
         if (name.startswith('.') or not SCRIPT_NAME_PATTERN.match(name)
-                or not os.path.isfile(path) or not os.access(path, os.X_OK)):
+                or not predefined_script_accessible(path)):
             continue
         description, args = read_script_header(path)
         if not description and not args:
@@ -1485,35 +1495,64 @@ class FoxMCPTools:
             window_id: Optional[int] = None,
             format: str = "png",
             quality: int = 90,
-            tab_id: Optional[int] = None
+            tab_id: Optional[int] = None,
+            x: Optional[int] = None,
+            y: Optional[int] = None,
+            width: Optional[int] = None,
+            height: Optional[int] = None,
+            scale: Optional[float] = None
         ) -> str:
-            """Capture a screenshot of the visible tab, or of the tab given by tab_id
+            """Capture a tab screenshot with optional crop and scale
 
-            What comes back depends on whether you pass a filename: with one, the image is
-            written to disk and you get a success message and the path; without one, you get
-            the image inline as a base64 data URL, which for a full window is large.
+            Use filename for the complete image; otherwise return a preview and size.
+            Crops use document-relative CSS pixels. Images transfer directly to this
+            server over HTTP, including images larger than the control-message limit.
 
             Args:
-                filename: Name of the file to save the screenshot (optional, if not provided returns base64)
-                window_id: ID of the window to capture (optional, defaults to current window)
+                filename: Output path for the complete image; omitted returns a preview and size
+                window_id: Window whose active tab to capture; defaults to the current window
                 format: Image format ('png' or 'jpeg', default: 'png')
                 quality: Image quality for JPEG format (1-100, default: 90)
                 tab_id: Capture this tab, even in the background (not with window_id)
+                x: Crop's left edge in document CSS pixels, integer >= 0; requires y, width, height
+                y: Crop's top edge in document CSS pixels, integer >= 0; requires x, width, height
+                width: Crop width in CSS pixels, positive integer; requires x, y, height
+                height: Crop height in CSS pixels, positive integer; requires x, y, width
+                scale: Finite output pixels per CSS pixel, 0 < scale <= 4; defaults to 1
+                    with a crop, otherwise the target tab's DPR
 
             Returns:
-                Success message with file path if filename provided, otherwise base64 encoded image data URL
-
-                Not exposed to clients — see the description above.
+                With filename: a save confirmation and path. Without filename: the first
+                100 data-URL characters and the base64 character count. Errors return text.
             """
             if tab_id is not None and window_id is not None:
                 return "Error capturing screenshot: pass tab_id or window_id, not both"
+
+            region = {}
+            if any(v is not None for v in (x, y, width, height)):
+                if None in (x, y, width, height):
+                    return "Error capturing screenshot: pass x, y, width and height together"
+                if not all(isinstance(v, int) and not isinstance(v, bool)
+                           for v in (x, y, width, height)):
+                    return "Error capturing screenshot: x, y, width and height must be integers"
+                if x < 0 or y < 0:
+                    return "Error capturing screenshot: x and y must not be negative"
+                if width <= 0 or height <= 0:
+                    return "Error capturing screenshot: width and height must be positive"
+                region["rect"] = {"x": x, "y": y, "width": width, "height": height}
+            if scale is not None:
+                if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+                    return "Error capturing screenshot: scale must be a number"
+                if not math.isfinite(scale) or not 0 < scale <= 4:
+                    return "Error capturing screenshot: scale must be above 0 and at most 4"
+                region["scale"] = float(scale)
 
             if tab_id is not None:
                 request = {
                     "id": str(uuid.uuid4()),
                     "type": "request",
                     "action": "tabs.captureTab",
-                    "data": {"tabId": tab_id, "format": format, "quality": quality},
+                    "data": {"tabId": tab_id, "format": format, "quality": quality, **region},
                     "timestamp": datetime.now().isoformat()
                 }
             else:
@@ -1524,82 +1563,82 @@ class FoxMCPTools:
                     "data": {
                         **({"windowId": window_id} if window_id else {}),
                         "format": format,
-                        "quality": quality
+                        "quality": quality,
+                        **region
                     },
                     "timestamp": datetime.now().isoformat()
                 }
 
-            response = await self._send(profile_id, request)
+            token = None
+            service = self.file_transfers
+            output_filename = filename
+            if filename and not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                output_filename = f"{filename}.{format}"
+            try:
+                if service is None:
+                    raise RuntimeError("Screenshot transfer service is unavailable")
+                directory = os.path.dirname(os.path.abspath(output_filename)) if filename else None
+                token, url, upload = service.reserve_upload(
+                    request["id"], profile_id, "screenshot", f"image/{format}", directory)
+                request["data"]["upload"] = {"url": url, "requestId": request["id"]}
+                response = await self._send(profile_id, request, timeout=120.0)
 
-            if "error" in response:
-                return f"Error capturing screenshot: {response['error']}"
+                if "error" in response:
+                    return f"Error capturing screenshot: {response['error']}"
+                if response.get("type") == "error":
+                    error_msg = response.get("data", {}).get("message", "Unknown error")
+                    return f"Failed to capture screenshot: {error_msg}"
+                if response.get("type") != "response" or "data" not in response:
+                    return "Unable to capture screenshot"
 
-            if (tab_id is not None and response.get("type") == "error"
-                    and response.get("data", {}).get("code") == "UNKNOWN_ACTION"):
-                return (
-                    "Failed to capture screenshot: this FoxMCP extension is too old to capture a "
-                    "tab that is not showing (it has no tabs.captureTab). Update the extension, or "
-                    "make the tab the active one (tabs_switch) and use window_id."
-                )
+                data = response["data"]
+                uploaded = data.get("upload")
+                if (not isinstance(uploaded, dict)
+                        or uploaded.get("requestId") != request["id"]
+                        or uploaded.get("type") != upload.mime_type):
+                    return "Error capturing screenshot: missing or mismatched upload acknowledgement"
+                completed = await asyncio.wait_for(
+                    asyncio.shield(asyncio.wrap_future(upload.completion)),
+                    timeout=max(0.001, upload.expires - time.monotonic()))
+                if (type(uploaded.get("size")) is not int
+                        or uploaded["size"] != completed["size"] or completed["size"] == 0):
+                    return "Error capturing screenshot: upload size mismatch"
 
-            if response.get("type") == "response" and "data" in response:
-                data_url = response["data"].get("dataUrl", "")
-                captured_format = response["data"].get("format", format)
-                captured_quality = response["data"].get("quality", quality)
-                captured_window_id = response["data"].get("windowId", "current")
-                captured_tab_id = response["data"].get("tabId")
+                captured_format = data.get("format", format)
+                captured_quality = data.get("quality", quality)
+                captured_window_id = data.get("windowId", "current")
+                captured_tab_id = data.get("tabId")
                 captured_from = (
                     f"tab {captured_tab_id}" if captured_tab_id is not None
                     else f"window {captured_window_id}"
                 )
-
-                if not data_url:
-                    return "No screenshot data received"
-
-                # Extract the base64 part from data URL
-                data_prefix = f"data:image/{captured_format};base64,"
-                if not data_url.startswith(data_prefix):
-                    return f"Screenshot captured but unexpected format: {data_url[:100]}..."
-
-                base64_data = data_url[len(data_prefix):]
-
-                # If filename is provided, save to file
                 if filename:
                     try:
-                        # Add file extension if not provided
-                        if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            filename = f"{filename}.{captured_format}"
-
-                        # Decode base64 and save to file
-                        image_data = base64.b64decode(base64_data)
-                        with open(filename, 'wb') as f:
-                            f.write(image_data)
-
-                        file_size = len(image_data)
-                        return (
-                            f"Screenshot saved to '{filename}' "
-                            f"({captured_from}, {captured_format}, "
-                            f"quality: {captured_quality}, size: {file_size} bytes)"
-                        )
-
-                    except Exception as e:
-                        return f"Error saving screenshot to file '{filename}': {str(e)}"
-
-                else:
-                    # Return base64 data as before when no filename provided
-                    data_size = len(base64_data)
+                        os.replace(completed["path"], output_filename)
+                    except OSError as error:
+                        return f"Error saving screenshot to file '{output_filename}': {error}"
                     return (
-                        f"Screenshot captured successfully from {captured_from} "
-                        f"({captured_format}, quality: {captured_quality}):\n"
-                        f"{data_url[:100]}...\n\n"
-                        f"Base64 data size: {data_size} characters"
+                        f"Screenshot saved to '{output_filename}' "
+                        f"({captured_from}, {captured_format}, "
+                        f"quality: {captured_quality}, size: {completed['size']} bytes)"
                     )
 
-            elif response.get("type") == "error":
-                error_msg = response.get("data", {}).get("message", "Unknown error")
-                return f"Failed to capture screenshot: {error_msg}"
-
-            return "Unable to capture screenshot"
+                prefix = f"data:{completed['type']};base64,"
+                with open(completed["path"], "rb") as image:
+                    preview = prefix + base64.b64encode(image.read(75)).decode("ascii")
+                data_size = 4 * ((completed["size"] + 2) // 3)
+                return (
+                    f"Screenshot captured successfully from {captured_from} "
+                    f"({captured_format}, quality: {captured_quality}):\n"
+                    f"{preview[:100]}...\n\n"
+                    f"Base64 data size: {data_size} characters"
+                )
+            except (asyncio.TimeoutError, OSError, ValueError, RuntimeError) as error:
+                detail = str(error) or type(error).__name__
+                return f"Error capturing screenshot: {detail}"
+            finally:
+                if token is not None:
+                    service.revoke(token)
 
     def _setup_history_tools(self):
         """Setup history management tools"""
@@ -2281,63 +2320,65 @@ class FoxMCPTools:
                 if token is not None:
                     service.revoke(token)
 
-        # Console Tool
+        # Wait Tool
         @self._tool()
-        async def content_read_console(
+        async def content_wait(
             profile_id: int,
             tab_id: int,
-            level: Optional[str] = None,
-            pattern: Optional[str] = None,
-            limit: int = 50,
-            clear: bool = False
+            script: str,
+            timeout: float = 10.0,
+            interval: float = 0.2
         ) -> str:
-            """Read what the page logged to its console and its uncaught JavaScript errors
+            """Wait until a script run in the tab returns a value, and return that value
 
-            Recording starts with the first call on a page, so call it once before the
-            action to debug; it restarts when the tab navigates.
+            The script is run again and again, every interval, until it returns
+            something other than null or undefined (false and 0 count as values).
+            Use it to wait for an element, text, a URL, an animation, a video or an
+            event after a click or a navigation. A script that throws, or returns a
+            value that cannot be cloned (a DOM node, a function), ends the wait with
+            its error; a tab that is loading or navigating is tried again.
+            The script must not change the page, since it runs repeatedly. It goes
+            through the same per-tab approval as content_execute_script, asked once.
 
-            Entries are kept up to 500 per page, each cut to 2,000 characters. What a
-            page logs can include secrets and personal data, and it is returned as is.
+            Examples of scripts:
+              document.querySelector('#done') ? true : null
+              document.body.innerText.includes('Saved') ? 'Saved' : null
+              location.href.includes('/done') ? location.href : null
+              document.readyState === 'complete' ? true : null
 
             Args:
                 tab_id: ID of the tab
-                level: (optional) Only log, info, warn, error (which includes uncaught
-                    errors) or debug
-                pattern: (optional, a string) Only messages containing this text,
-                    case-sensitive
-                limit: (optional, an integer from 1 to 500, default: 50) Newest entries
-                    to return
-                clear: (optional, default: False) Forget all the entries after reading
-                    them, not only the ones returned; ignored on the first call
+                script: JavaScript to run; its last value is the result, and a promise is awaited
+                timeout: (optional, default: 10) Seconds to keep trying, above 0 and up to 120,
+                    counted after the first run, which may wait for approval
+                interval: (optional, default: 0.2) Seconds between runs, from 0.1 to 5
             """
-            if level is not None and (not isinstance(level, str) or level not in (
-                    "log", "info", "warn", "error", "debug")):
-                raise ValueError("level must be log, info, warn, error or debug")
-            if pattern is not None and not isinstance(pattern, str):
-                raise ValueError("pattern must be a string")
-            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
-                raise ValueError("limit must be an integer from 1 to 500")
-            if not isinstance(clear, bool):
-                raise ValueError("clear must be a boolean")
+            if not isinstance(script, str) or not script.strip():
+                return "Failed to wait: script must be a nonempty string"
+            if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                    or not math.isfinite(timeout) or not 0 < timeout <= 120):
+                return "Failed to wait: timeout must be a number above 0 and at most 120"
+            if (isinstance(interval, bool) or not isinstance(interval, (int, float))
+                    or not math.isfinite(interval) or not 0.1 <= interval <= 5):
+                return "Failed to wait: interval must be a number from 0.1 to 5"
             response = await self._send(profile_id, {
                 "id": str(uuid.uuid4()),
                 "type": "request",
-                "action": "content.console",
-                "data": {"tabId": tab_id, "level": level, "pattern": pattern,
-                         "limit": limit, "clear": clear},
+                "action": "content.wait",
+                "data": {"tabId": tab_id, "script": script,
+                         "timeoutMs": max(1, round(timeout * 1000)),
+                         "intervalMs": round(interval * 1000)},
                 "timestamp": datetime.now().isoformat()
-            })
+            }, timeout=timeout + 120.0)
             if "error" in response:
-                return f"Failed to read the console: {response['error']}"
-            if response.get("type") != "response" or "data" not in response:
-                return f"Failed to read the console: {response.get('data', {}).get('message', 'Unknown error')}"
-            data = response["data"]
-            if data.get("started"):
-                return "Console recording started; call again after the page has logged something"
-            entries = data.get("entries", [])
-            if not entries:
-                return "No console entries"
-            return "\n".join(f"[{e['level']}] {e['message']}" for e in entries)
+                return f"Failed to wait: {response['error']}"
+            if response.get("type") == "response" and "data" in response:
+                data = response["data"]
+                result = data.get("result")
+                text = result if isinstance(result, str) else json.dumps(result)
+                return (f"Ready after {data.get('waitedMs', 0)} ms and {data.get('attempts', 1)} "
+                        f"run(s) in tab {tab_id} ({data.get('url', 'Unknown URL')}):\n{text}")
+            return f"Failed to wait: {response.get('data', {}).get('message', 'Unknown error')}"
 
         # Get Page Text Tool
         @self._tool()
@@ -2539,9 +2580,14 @@ class FoxMCPTools:
                 logger.warning(f"Predefined script refused: {script_name!r} not found in {scripts_dir!r}")
                 return f"Error: Script '{script_name}' not found in {scripts_dir}"
 
-            if not os.access(script_path, os.X_OK):
-                logger.warning(f"Predefined script refused: {script_name!r} is not executable")
-                return f"Error: Script '{script_name}' is not executable"
+            if not os.path.isfile(script_path):
+                logger.warning(f"Predefined script refused: {script_name!r} is not a regular file")
+                return f"Error: Script '{script_name}' is not a regular file"
+
+            if not predefined_script_accessible(script_path):
+                required = 'readable' if os.path.splitext(script_path)[1].lower() == '.py' else 'executable'
+                logger.warning(f"Predefined script refused: {script_name!r} is not {required}")
+                return f"Error: Script '{script_name}' is not {required}"
 
             try:
                 # Parse JSON arguments - handle both empty string and JSON arrays
@@ -2572,7 +2618,7 @@ class FoxMCPTools:
                     logger.warning(f"Predefined script {script_name!r} refused: script_args is not valid JSON - {e}")
                     return f"Error: Invalid JSON in script_args: {e}"
 
-                # Chooses an interpreter only where Windows needs one, after the existing script-name, permission, and argument validation.
+                # Choose an interpreter after script-name, permission and argument validation.
                 try:
                     command = predefined_script_command(script_path)
                 except ValueError as e:
@@ -2716,9 +2762,9 @@ class FoxMCPTools:
             its monitors; profile disconnection clears monitors and captured data.
 
             Args:
-                url_patterns: List of URL patterns to monitor (e.g., ["https://api.example.com/*", "*/api/*"])
+                url_patterns: Patterns matched against each chain's initial URL
+                    (e.g., ["https://example.org/api/*", "*/api/*"])
                 options: Strict capture settings; unknown fields are rejected.
-                    Listing filters belong to requests_list_captured, not here.
                     - capture_request_bodies: bool (default: True)
                     - capture_response_bodies: bool (default: True)
                     - max_body_size: positive int (default: 50000), bytes retained
@@ -2726,6 +2772,17 @@ class FoxMCPTools:
                     - content_types_to_capture: List[str] (default: ["application/json", "text/plain"])
                       — a body comes back as text only if its content type matches one
                       of these and is text to begin with
+                    - methods: (optional) List[str] of HTTP methods to capture, such as
+                      ["POST"], case-insensitive (default: all methods)
+                    - resource_types: (optional) List[str] of Firefox resource types to
+                      capture, such as ["xmlhttprequest", "script"] (default: all types)
+                    - min_status: (optional) int from 100 to 599; list only requests whose
+                      response status is at least this, such as 400
+                    - failed_only: (optional) bool (default: False); list only requests that
+                      failed, meaning an error or a status of 400 and above
+                    methods and resource_types decide what is captured at all. min_status
+                    and failed_only are checked when a request completes, so a response
+                    body can be held for a request that is then not listed.
                 tab_id: Optional tab ID to monitor (if not provided, monitors all tabs)
 
             Returns:
@@ -2739,6 +2796,16 @@ class FoxMCPTools:
                     options if options is not None else {}).model_dump()
             except ValidationError as error:
                 return json.dumps({"error": f"Invalid monitoring options: {error}"})
+
+            # Send a capture filter only when it is set: an extension from before the
+            # filters rejects options it does not know, and must keep working without them.
+            for name in ("methods", "resource_types"):
+                if not default_options[name]:
+                    del default_options[name]
+            if default_options["min_status"] is None:
+                del default_options["min_status"]
+            if default_options["failed_only"] is False:
+                del default_options["failed_only"]
 
             request_data = {
                 "url_patterns": url_patterns,
@@ -2821,22 +2888,28 @@ class FoxMCPTools:
             return json.dumps({"error": "Unable to stop monitoring"})
 
         @self._tool()
-        async def requests_list_captured(profile_id: int, monitor_id: str) -> str:
+        async def requests_list_captured(
+            profile_id: int,
+            monitor_id: str,
+            limit: Annotated[Optional[int], Field(strict=True, ge=1)] = None
+        ) -> str:
             """
-            List all captured request summaries from a monitoring session
-
-            A request appears here once it has completed, so a page navigation
-            started a moment ago will not be in the list yet. Start with
-            requests_start_monitoring, then reuse its monitor_id here. This reads
-            stored summaries without starting or stopping capture. Use a returned
-            request_id with requests_get_content to inspect its stored body.
+            List completed request chains with ordered redirected requests. Start monitoring
+            before triggering traffic; use limit to return only the last captured chains.
+            Reads remain available after stop until the profile disconnects.
 
             Args:
                 monitor_id: ID of the monitoring session
+                limit: Positive integer cap on returned chains; total_requests remains
+                    the full count and returned_requests counts the limited result
 
             Returns:
                 JSON string with captured request summaries
             """
+            if limit is not None and (
+                    isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+                return json.dumps({"error": "limit must be an integer of 1 or more"})
+
             request = {
                 "id": str(uuid.uuid4()),
                 "type": "request",
@@ -2853,7 +2926,14 @@ class FoxMCPTools:
                 return json.dumps({"error": f"Failed to list captured requests: {response['error']}"})
 
             if response.get("type") == "response" and "data" in response:
-                return json.dumps(response["data"])
+                data = response["data"]
+                if limit is not None:
+                    if not isinstance(data, dict) or not isinstance(data.get("requests"), list):
+                        return json.dumps({"error": "Failed to list captured requests: "
+                                                    "the extension returned no request list"})
+                    kept = data["requests"][-limit:]
+                    data = {**data, "returned_requests": len(kept), "requests": kept}
+                return json.dumps(data)
             elif response.get("type") == "error":
                 error_msg = response.get("data", {}).get("message", "Unknown error")
                 return json.dumps({"error": f"Failed to list captured requests: {error_msg}"})

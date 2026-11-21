@@ -37,7 +37,8 @@ def release(tmp_path):
     (assets / "scripts/install-xpi.sh").write_text("#!/bin/bash\nexit 0\n")
     (assets / "predefined-ex").mkdir()
     for name in ("gcal-cal-event-js.sh", "gcal-daily-events-js.sh", "gcal-monthly-events-js.sh",
-                 "dom-summarize.sh", "youtube-play-pause.sh", "set-file-input.py"):
+                 "dom-summarize.sh", "youtube-play-pause.sh", "set-file-input.py",
+                 "read-console.py"):
         (assets / "predefined-ex" / name).write_text("# example\n")
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(assets)))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
