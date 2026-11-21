@@ -1179,7 +1179,8 @@ async function tickRecording(recording) {
     await captureRecordingFrame(recording);
   } catch (error) {
     recording.error = error.message;
-    stopRecordingTimer(recording);
+    // The recording is over: free its socket now, not when someone calls stop.
+    closeRecording(recording);
   } finally {
     recording.busy = false;
   }
@@ -1198,9 +1199,23 @@ function clearAllRecordings() {
 }
 
 browser.tabs.onRemoved.addListener(tabId => {
-  closeRecording(recordings.get(`rec-${tabId}`));
-  recordings.delete(`rec-${tabId}`);
+  for (const [recordingId, recording] of recordings) {
+    if (recording.tabId !== tabId) continue;
+    closeRecording(recording);
+    recordings.delete(recordingId);
+  }
 });
+
+// The websocket of a recording must not carry cookies. The receiver is on this machine, but
+// Firefox would send it any cookie it holds for that host. Only the extension's own sockets
+// (tabId -1) are touched, and none of them uses cookies, so the header is always removed.
+browser.webRequest.onBeforeSendHeaders.addListener(
+  details => ({
+    requestHeaders: details.requestHeaders.filter(header => header.name.toLowerCase() !== 'cookie')
+  }),
+  { urls: ['ws://*/*', 'wss://*/*'], types: ['websocket'], tabId: -1 },
+  ['blocking', 'requestHeaders']
+);
 
 async function transferScreenshot(dataUrl, upload, format) {
   const url = screenshotUploadUrl(upload);
@@ -1622,8 +1637,9 @@ async function handleTabsAction(id, action, data) {
           sendError(id, 'INVALID_PARAMETER', targetError.message);
           break;
         }
-        const recordingId = `rec-${recordTabId}`;
-        closeRecording(recordings.get(recordingId));
+        // One ID per start, never one per tab: two clients recording the same tab each have
+        // their own recording, and neither can stop the other's.
+        const recordingId = `rec-${crypto.randomUUID()}`;
         const recording = {
           id: recordingId, tabId: recordTabId, url: target, socket: null, sent: 0, skipped: 0,
           busy: true, timer: null, error: null, maxFrames, intervalMs, started: Date.now(),
@@ -1642,12 +1658,12 @@ async function handleTabsAction(id, action, data) {
             `Cannot record tab ${recordTabId} to ${target.href}: ${startError.message}`);
           break;
         }
-        // Another start on this tab, or the tab closing, may have taken the recording over
-        // while the first frame was on its way.
+        // The tab closing, or the connection ending, may have dropped the recording while the
+        // first frame was on its way.
         if (recordings.get(recordingId) !== recording || recording.closed) {
           closeRecording(recording);
           sendError(id, 'API_ERROR',
-            `The recording of tab ${recordTabId} was replaced or its tab closed before it started`);
+            `The recording of tab ${recordTabId} was dropped before it started`);
           break;
         }
         recording.busy = false;

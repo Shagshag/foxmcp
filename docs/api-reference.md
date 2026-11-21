@@ -84,7 +84,7 @@ does not rely on an extension-supplied name or a user-entered label.
 - `tabs_ungroup(profile_id, tab_ids)` - Take tabs out of their group
 - `tabs_groups_update(profile_id, group_id, title=None, color=None, collapsed=None)` - Change a group's title, colour or collapsed state
 - `tabs_groups_query(profile_id, window_id=None, title=None, color=None, collapsed=None)` - List tab groups and their IDs
-- `tabs_record_start(profile_id, tab_id, url, interval_ms=500, max_frames=60, scale=0.5, quality=50)` - Record a tab by sending small JPEG screenshots to a receiver on this machine that you run. `url` is an `http://` or `https://` address that takes a POST of each frame, or a `ws://` or `wss://` address that gets a text message and then a binary message per frame (see [receiving frames](#receiving-recording-frames)); only `127.0.0.1`, `localhost` and `[::1]` are accepted. `interval_ms` is an integer from 100 to 5000, `max_frames` from 1 to 300 (it stops there), `scale` a number above 0 and at most 1, `quality` an integer from 1 to 100. The first frame is sent before the call returns, so a receiver that is not there is an error. Starting again on the same tab replaces the earlier recording, and it is dropped when the tab closes or the connection ends
+- `tabs_record_start(profile_id, tab_id, url, interval_ms=500, max_frames=60, scale=0.5, quality=50)` - Record a tab by sending small JPEG screenshots to a receiver on this machine that you run. `url` is an `http://` or `https://` address that takes a POST of each frame, or a `ws://` or `wss://` address that gets a text message and then a binary message per frame (see [receiving frames](#receiving-recording-frames)); only `127.0.0.1`, `localhost` and `[::1]` are accepted. `interval_ms` is an integer from 100 to 5000, `max_frames` from 1 to 300 (it stops there), `scale` a number above 0 and at most 1, `quality` an integer from 1 to 100. The first frame is sent before the call returns, so a receiver that is not there is an error. Every start gets its own recording ID, so several recordings of one tab can run at once and a stop only affects the recording it names. A recording is dropped when the tab closes or the connection ends
 - `tabs_record_stop(profile_id, recording_id)` - Stop a recording and report how many frames reached the receiver, how many were skipped because it was slow, and why it ended early, if it did
 
 #### Receiving recording frames
@@ -93,7 +93,7 @@ builds whatever it wants (a GIF, a video). Over HTTP, every frame is a `POST` wi
 `Content-Type: image/jpeg`, the JPEG as the body, and the headers `X-FoxMCP-Recording` (the
 recording ID), `X-FoxMCP-Frame` (the frame number, from 0) and `X-FoxMCP-Time` (an ISO time); the
 receiver answers any 2xx status within 10 seconds, and anything else (a redirect, a timeout, another
-status) ends the recording; no cookies are sent. Over a websocket, every frame is a text message
+status) ends the recording; no cookies are sent, on a websocket handshake either. Over a websocket, every frame is a text message
 `{"recording": "rec-12", "frame": 0, "time": "..."}` followed by a binary message with the JPEG, and
 the receiver closing the connection ends the recording. A frame is skipped, and counted by
 `tabs_record_stop`, while the previous one is still on its way. A recording that ends by itself

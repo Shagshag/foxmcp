@@ -869,9 +869,10 @@ frame has been delivered, so a receiver that is not there, or that refuses the f
 `API_ERROR`. All six fields are required: `url` must start with `http://`, `https://`, `ws://` or
 `wss://`, point to this machine and carry no credentials, `intervalMs` is an integer from 100 to
 5000, `maxFrames` from 1 to 300, `quality` from 1 to 100 and `scale` a finite number above 0 and at
-most 1, otherwise the answer is an `INVALID_PARAMETER` error. There is one recording per tab, and
-starting again replaces it. Capturing stops by itself at `maxFrames`. A recording is dropped when
-its tab closes or the connection to the server ends.
+most 1, otherwise the answer is an `INVALID_PARAMETER` error. Every start gets its own opaque
+`recordingId`, so several recordings of one tab can run at once and `tabs.record_stop` only ever
+stops the one it names. Capturing stops by itself at `maxFrames`. A recording is dropped when its
+tab closes or the connection to the server ends.
 
 Over HTTP every frame is a `POST` of the JPEG (`Content-Type: image/jpeg`) with the headers
 `X-FoxMCP-Recording`, `X-FoxMCP-Frame` (from 0) and `X-FoxMCP-Time` (an ISO time); any 2xx
@@ -882,8 +883,8 @@ followed by a binary message with the JPEG, and the socket is closed after the l
 A frame that is still on its way when the next one is due makes the extension skip that one, and so
 does a websocket that still has data waiting to be sent; both count in `skipped`. A failed send (a
 status other than 2xx, a refused redirect, a timeout, a closed websocket) ends the recording.
-`tabs.record_start` answers `API_ERROR` if another start on the same tab replaces the recording, or
-its tab closes, before the first frame has been delivered.
+The websocket handshake carries no cookies either. `tabs.record_start` answers `API_ERROR` if the
+tab closes, or the connection to the server ends, before the first frame has been delivered.
 
 `tabs.record_stop` answers `{"frames", "skipped", "durationMs", "error"}`: the frames delivered,
 the ticks skipped because the receiver was slow, how long the recording ran and why it ended early,

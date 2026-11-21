@@ -1700,9 +1700,10 @@ class FoxMCPTools:
             message {"recording", "frame", "time"} and then a binary message with the
             JPEG. Only 127.0.0.1, localhost and [::1] are accepted. The receiver builds
             whatever it wants from the frames (a GIF, a video). The first frame is sent
-            before this returns, so a receiver that is not there is an error now. One
-            recording per tab: starting again replaces the earlier one. It is dropped
-            when the tab closes or the connection to the server ends.
+            before this returns, so a receiver that is not there is an error now. Every
+            start returns its own recording ID, so recordings of the same tab do not
+            interfere. It is dropped when the tab closes or the connection to the
+            server ends.
 
             Args:
                 tab_id: ID of the tab to record (it may be in the background)
