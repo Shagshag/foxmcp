@@ -1,6 +1,7 @@
 """Tests for the bundled read-console.py predefined script"""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -49,6 +50,16 @@ def test_bad_arguments_exit_with_a_usage_message(arguments):
     assert result.returncode != 0
     assert "read-console.py" in result.stderr
     assert result.stdout == ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_generated_javascript_is_valid(tmp_path):
+    generated = tmp_path / "generated.js"
+    generated.write_text(run("--level", "error", "--pattern", "it's \"x\"").stdout, encoding="utf-8")
+
+    check = subprocess.run(["node", "--check", str(generated)], capture_output=True, text=True)
+
+    assert check.returncode == 0, check.stderr
 
 
 def test_the_script_is_listed_with_its_description(tmp_path):

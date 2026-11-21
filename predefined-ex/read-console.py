@@ -32,7 +32,10 @@ sys.stdout.write("""(() => {
       if (value === undefined) return 'undefined';
       if (value === null || typeof value !== 'object') return String(value);
       try {
-        if (value instanceof window.wrappedJSObject.Error) return value.stack || String(value);
+        // Firefox's stack has no message line, so keep the message with it.
+        if (value instanceof window.wrappedJSObject.Error) {
+          return value.stack ? String(value) + '\\n' + value.stack : String(value);
+        }
         return JSON.stringify(value);
       } catch (error) {
         return Object.prototype.toString.call(value);
