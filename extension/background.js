@@ -1169,24 +1169,33 @@ function clearAllRecordings() {
   recordings.clear();
 }
 
-browser.tabs.onRemoved.addListener(tabId => {
-  for (const [recordingId, recording] of recordings) {
-    if (recording.tabId !== tabId) continue;
-    closeRecording(recording);
-    recordings.delete(recordingId);
-  }
-});
+// The two listeners a recording needs are added by the first recording, not when this script
+// loads: nothing listens until someone records, and a script that is loaded where these APIs
+// are missing (a test with a minimal browser object) still loads.
+let recordingListenersAdded = false;
 
-// The websocket of a recording must not carry cookies. The receiver is on this machine, but
-// Firefox would send it any cookie it holds for that host. Only the extension's own sockets
-// (tabId -1) are touched, and none of them uses cookies, so the header is always removed.
-browser.webRequest.onBeforeSendHeaders.addListener(
-  details => ({
-    requestHeaders: details.requestHeaders.filter(header => header.name.toLowerCase() !== 'cookie')
-  }),
-  { urls: ['ws://*/*', 'wss://*/*'], types: ['websocket'], tabId: -1 },
-  ['blocking', 'requestHeaders']
-);
+function addRecordingListeners() {
+  if (recordingListenersAdded) return;
+  recordingListenersAdded = true;
+  browser.tabs.onRemoved.addListener(tabId => {
+    for (const [recordingId, recording] of recordings) {
+      if (recording.tabId !== tabId) continue;
+      closeRecording(recording);
+      recordings.delete(recordingId);
+    }
+  });
+
+  // The websocket of a recording must not carry cookies. The receiver is on this machine, but
+  // Firefox would send it any cookie it holds for that host. Only the extension's own sockets
+  // (tabId -1) are touched, and none of them uses cookies, so the header is always removed.
+  browser.webRequest.onBeforeSendHeaders.addListener(
+    details => ({
+      requestHeaders: details.requestHeaders.filter(header => header.name.toLowerCase() !== 'cookie')
+    }),
+    { urls: ['ws://*/*', 'wss://*/*'], types: ['websocket'], tabId: -1 },
+    ['blocking', 'requestHeaders']
+  );
+}
 
 async function transferScreenshot(dataUrl, upload, format) {
   const url = screenshotUploadUrl(upload);
@@ -1594,6 +1603,7 @@ async function handleTabsAction(id, action, data) {
           sendError(id, 'INVALID_PARAMETER', targetError.message);
           break;
         }
+        addRecordingListeners();
         // One ID per start, never one per tab: two clients recording the same tab each have
         // their own recording, and neither can stop the other's.
         const recordingId = `rec-${crypto.randomUUID()}`;
