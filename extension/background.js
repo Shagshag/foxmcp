@@ -1187,7 +1187,8 @@ function addRecordingListeners() {
 
   // The websocket of a recording must not carry cookies. The receiver is on this machine, but
   // Firefox would send it any cookie it holds for that host. Only the extension's own sockets
-  // (tabId -1) are touched, and none of them uses cookies, so the header is always removed.
+  // (tabId -1) are touched, from the first recording on, and none of them uses cookies, so the
+  // header is simply removed.
   browser.webRequest.onBeforeSendHeaders.addListener(
     details => ({
       requestHeaders: details.requestHeaders.filter(header => header.name.toLowerCase() !== 'cookie')
