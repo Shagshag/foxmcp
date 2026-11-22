@@ -1669,21 +1669,30 @@ function clearAllDownloadWatches() {
   downloadWatches.clear();
 }
 
-browser.downloads.onCreated.addListener(item => {
-  for (const watch of downloadWatches.values()) {
-    if (watch.followId === null && downloadWatchMatches(watch, item)) {
-      watch.followId = item.id;
-      checkDownloadWatch(watch);
-    }
-  }
-});
+// The two listeners are added by the first watch, not when this script loads: nothing is
+// listening for downloads until someone asks, and a script that is loaded where the
+// downloads API is missing (a test with a minimal browser object) still loads.
+let downloadListenersAdded = false;
 
-browser.downloads.onChanged.addListener(delta => {
-  if (!delta.state && !delta.error) return;
-  for (const watch of downloadWatches.values()) {
-    if (watch.followId === delta.id) checkDownloadWatch(watch);
-  }
-});
+function addDownloadListeners() {
+  if (downloadListenersAdded) return;
+  downloadListenersAdded = true;
+  browser.downloads.onCreated.addListener(item => {
+    for (const watch of downloadWatches.values()) {
+      if (watch.followId === null && downloadWatchMatches(watch, item)) {
+        watch.followId = item.id;
+        checkDownloadWatch(watch);
+      }
+    }
+  });
+
+  browser.downloads.onChanged.addListener(delta => {
+    if (!delta.state && !delta.error) return;
+    for (const watch of downloadWatches.values()) {
+      if (watch.followId === delta.id) checkDownloadWatch(watch);
+    }
+  });
+}
 
 // Content handlers
 async function handleContentAction(id, action, data) {
@@ -1784,6 +1793,7 @@ async function handleContentAction(id, action, data) {
           id: `watch-${crypto.randomUUID()}`, url: callback, downloadId: watchedId, urlContains,
           followId: watchedId, timer: null
         };
+        addDownloadListeners();
         downloadWatches.set(watch.id, watch);
         watch.timer = setTimeout(() => timeOutDownloadWatch(watch), data.timeoutMs);
         sendResponse(id, action, {
